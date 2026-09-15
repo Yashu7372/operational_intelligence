@@ -1,0 +1,71 @@
+policies:
+  - task_type: BOOTSTRAP_SYSTEM
+    requirements:
+      - {key: workspace_structure, knowledge_type: WORKSPACE_STRUCTURE, preferred_operations: [discover]}
+      - {key: technology_stack, knowledge_type: TECHNOLOGY_STACK, preferred_operations: [detect]}
+  - task_type: UNDERSTAND_SYSTEM
+    requirements:
+      - {key: structural_model, knowledge_type: STRUCTURAL_MODEL, preferred_operations: [analyze]}
+      - {key: architecture_relationships, knowledge_type: ARCHITECTURE_RELATIONSHIPS, preferred_operations: [analyze]}
+      - {key: data_model, knowledge_type: DATA_MODEL, preferred_operations: [inspect]}
+      - {key: database_schema, knowledge_type: DATABASE_SCHEMA, preferred_operations: [inspect]}
+  - task_type: IMPLEMENT_FEATURE
+    requirements:
+      - {key: functional_behavior, knowledge_type: FUNCTIONAL_BEHAVIOR, subject_from: primary_concept}
+      - {key: current_implementation, knowledge_type: CURRENT_IMPLEMENTATION, subject_from: primary_concept, preferred_operations: [search, analyze]}
+      - {key: architecture_pattern, knowledge_type: ARCHITECTURE_PATTERN, preferred_operations: [analyze]}
+      - {key: similar_implementation, knowledge_type: SIMILAR_IMPLEMENTATION, subject_from: primary_concept, preferred_operations: [search]}
+      - {key: contracts, knowledge_type: INTEGRATION_CONTRACTS, subject_from: primary_concept}
+      - {key: verification_pattern, knowledge_type: VERIFICATION_PATTERN, subject_from: primary_concept}
+  - task_type: FIX_DEFECT
+    requirements:
+      - {key: expected_behavior, knowledge_type: EXPECTED_BEHAVIOR, subject_from: primary_concept}
+      - {key: symptom_evidence, knowledge_type: RUNTIME_EVIDENCE, subject_from: primary_scope, preferred_operations: [observe, inspect]}
+      - {key: implementation_path, knowledge_type: CURRENT_IMPLEMENTATION, subject_from: primary_concept, preferred_operations: [search, analyze]}
+      - {key: related_incidents, knowledge_type: RELATED_INCIDENTS, subject_from: primary_concept}
+      - {key: verification_pattern, knowledge_type: VERIFICATION_PATTERN, subject_from: primary_concept}
+  - task_type: VALIDATE_FEATURE
+    requirements:
+      - {key: acceptance_criteria, knowledge_type: ACCEPTANCE_CRITERIA, subject_from: primary_concept}
+      - {key: business_rules, knowledge_type: BUSINESS_RULES, subject_from: primary_concept}
+      - {key: build_verification, knowledge_type: BUILD_VERIFICATION, subject_from: primary_scope, preferred_operations: [execute]}
+      - {key: test_verification, knowledge_type: TEST_VERIFICATION, subject_from: primary_scope, preferred_operations: [execute]}
+      - {key: api_verification, knowledge_type: API_VERIFICATION, subject_from: primary_scope, preferred_operations: [verify]}
+      - {key: runtime_evidence, knowledge_type: RUNTIME_EVIDENCE, subject_from: primary_scope, preferred_operations: [observe, snapshot]}
+      - {key: business_journey, knowledge_type: BUSINESS_JOURNEY, subject_from: primary_concept}
+      - {key: business_journey_verification, knowledge_type: BUSINESS_JOURNEY_VERIFICATION, subject_from: primary_concept, preferred_operations: [run]}
+  - task_type: PERFORMANCE_DIAGNOSIS
+    requirements:
+      - {key: performance_baseline, knowledge_type: PERFORMANCE_BASELINE, subject_from: primary_scope}
+      - {key: runtime_metrics, knowledge_type: RUNTIME_METRICS, subject_from: primary_scope, preferred_operations: [measure, observe, snapshot]}
+      - {key: execution_path, knowledge_type: RUNTIME_PATH, subject_from: primary_scope, preferred_operations: [trace]}
+      - {key: implementation_path, knowledge_type: CURRENT_IMPLEMENTATION, subject_from: primary_scope, preferred_operations: [search, analyze]}
+  - task_type: OPERATIONAL_DIAGNOSIS
+    requirements:
+      # Live incident facts stay in the Evidence Plane. These Knowledge Spine
+      # lookups enrich reasoning/reuse but do not become prerequisites that
+      # would force an LLM call when a proven diagnostic recipe already exists.
+      - {key: domain_semantics, knowledge_type: DOMAIN_SEMANTICS, required: false}
+      - {key: related_incidents, knowledge_type: RELATED_INCIDENTS, required: false}
+      - {key: verification_pattern, knowledge_type: VERIFICATION_PATTERN, required: false}
+  - task_type: ARCHITECTURE_REVIEW
+    requirements:
+      - {key: structural_model, knowledge_type: STRUCTURAL_MODEL, preferred_operations: [analyze]}
+      - {key: architecture_policies, knowledge_type: ARCHITECTURE_POLICIES}
+      - {key: dependency_graph, knowledge_type: DEPENDENCY_GRAPH, preferred_operations: [analyze]}
+      - {key: data_model, knowledge_type: DATA_MODEL, preferred_operations: [inspect]}
+  - task_type: SECURITY_REVIEW
+    requirements:
+      - {key: security_policies, knowledge_type: SECURITY_POLICIES}
+      - {key: attack_surface, knowledge_type: ATTACK_SURFACE, preferred_operations: [analyze]}
+      - {key: authorization_model, knowledge_type: AUTHORIZATION_MODEL, preferred_operations: [analyze]}
+  - task_type: ENTERPRISE_READINESS
+    requirements:
+      - {key: acceptance_policies, knowledge_type: ENTERPRISE_ACCEPTANCE_POLICIES}
+      - {key: build_verification, knowledge_type: BUILD_VERIFICATION, preferred_operations: [execute]}
+      - {key: test_verification, knowledge_type: TEST_VERIFICATION, preferred_operations: [execute]}
+      - {key: api_verification, knowledge_type: API_VERIFICATION, preferred_operations: [verify]}
+      - {key: browser_verification, knowledge_type: BUSINESS_JOURNEY_VERIFICATION, preferred_operations: [run]}
+      - {key: verification_coverage, knowledge_type: VERIFICATION_COVERAGE}
+      - {key: architecture_model, knowledge_type: STRUCTURAL_MODEL, preferred_operations: [analyze]}
+      - {key: database_schema, knowledge_type: DATABASE_SCHEMA, preferred_operations: [inspect]}
