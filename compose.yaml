@@ -1,0 +1,4 @@
+services:
+  operational-intelligence-lab:
+    build: .
+    command: ["operational-intelligence-lab"]

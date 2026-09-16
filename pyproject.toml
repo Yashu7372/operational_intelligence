@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "operational-intelligence-learning-loop"
+version = "0.1.0"
+description = "Runnable operational intelligence learning-loop lab"
+requires-python = ">=3.12"
+dependencies = [
+  "pydantic>=2.7,<3",
+  "PyYAML>=6.0"
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+operational-intelligence-lab = "operational_intelligence_lab.run:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
