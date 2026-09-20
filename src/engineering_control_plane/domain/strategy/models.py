@@ -35,6 +35,7 @@ class ProvenWorkflowRecipe(BaseModel):
     task_shape: str = Field(min_length=1)
     maturity: RecipeMaturity
     definition: WorkflowDefinition
+    preconditions: tuple[str, ...] = ()
     capability_versions: dict[str, str] = Field(default_factory=dict)
     source_run_ids: tuple[str, ...] = ()
     evidence_refs: tuple[str, ...] = ()
@@ -50,6 +51,7 @@ class StrategyAssessment(BaseModel):
     task_shape: str = Field(min_length=1)
     knowledge_sufficient: bool
     context_sufficient: bool
+    observed_conditions: tuple[str, ...] = ()
     available_capability_versions: dict[str, str] = Field(default_factory=dict)
     environment_fingerprint: str | None = None
 
