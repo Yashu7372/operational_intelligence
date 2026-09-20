@@ -34,6 +34,10 @@ class StrategyRouter:
             recipe
             for recipe in self._recipes.list_for_task_shape(assessment.task_shape)
             if recipe.maturity is RecipeMaturity.PROVEN
+            and self._preconditions_compatible(
+                recipe.preconditions,
+                assessment.observed_conditions,
+            )
             and self._capabilities_compatible(
                 recipe.capability_versions,
                 assessment.available_capability_versions,
@@ -52,14 +56,24 @@ class StrategyRouter:
                 strategy=ExecutionStrategy.DETERMINISTIC_RECIPE,
                 reasoning_tier=ReasoningTier.NONE,
                 recipe_id=selected.recipe_id,
-                reason="proven compatible workflow recipe",
+                reason="proven workflow recipe with matching guards and runtime compatibility",
             )
 
         return StrategyDecision(
             strategy=ExecutionStrategy.ADAPTIVE_REASONING,
             reasoning_tier=ReasoningTier.LIGHT,
-            reason="knowledge/context are sufficient but no proven compatible recipe exists",
+            reason=(
+                "knowledge/context are sufficient but no proven recipe matches "
+                "the observed guards and runtime compatibility"
+            ),
         )
+
+    @staticmethod
+    def _preconditions_compatible(
+        required: tuple[str, ...],
+        observed: tuple[str, ...],
+    ) -> bool:
+        return set(required).issubset(set(observed))
 
     @staticmethod
     def _capabilities_compatible(required: dict[str, str], available: dict[str, str]) -> bool:
