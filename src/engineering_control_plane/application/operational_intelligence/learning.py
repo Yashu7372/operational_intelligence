@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -18,12 +19,25 @@ from engineering_control_plane.domain.workflow.models import WorkflowDefinition
 from engineering_control_plane.domain.workspace.models import KnowledgeScope
 
 
+class LearningApproval(BaseModel):
+    """Durable human authority required before verified behavior becomes reusable."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    approval_id: str = Field(min_length=1)
+    evidence_package_ref: str = Field(min_length=1)
+    decision: Literal["APPROVED", "REJECTED"]
+    scope: Literal["LEARN_DIAGNOSTIC_PATTERN"]
+    approved_by: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
 class VerifiedDiagnosisLearningInput(BaseModel):
-    """Generalized diagnosis supplied only after deterministic reproduction passes.
+    """Generalized diagnosis supplied only after verification and human approval.
 
     Runtime instance identifiers deliberately have no field here. P1/C1/C2-like
-    values stay in the Evidence Plane. Only the reusable anomaly/failure shape and
-    generalized conditions may enter canonical knowledge.
+    values stay in the Evidence Plane. Only the reusable anomaly/failure shape,
+    generalized guards and approved workflow may enter canonical knowledge.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -36,6 +50,7 @@ class VerifiedDiagnosisLearningInput(BaseModel):
     diagnostic_run_id: str = Field(min_length=1)
     evidence_refs: tuple[str, ...] = Field(min_length=1)
     verification_evidence_ref: str = Field(min_length=1)
+    approval: LearningApproval
     capability_versions: dict[str, str] = Field(default_factory=dict)
     knowledge_scope: KnowledgeScope = Field(default_factory=KnowledgeScope)
     context_lens: str | None = None
@@ -75,15 +90,7 @@ class VerifiedDiagnosisLearningResult:
 
 
 class VerifiedDiagnosisLearningService:
-    """Close VERIFY -> LEARN using existing knowledge and recipe promotion.
-
-    This service is intentionally a coordinator. It does not write canonical
-    knowledge directly and it does not mark a model claim as true. The caller
-    must provide a deterministic verification evidence reference. Existing
-    KnowledgePromotionService validates evidence/integrity/scope, while
-    RecipePromotionService applies the configured maturity policy for future R0
-    deterministic reuse.
-    """
+    """Close VERIFY -> APPROVE -> LEARN using knowledge and recipe promotion."""
 
     def __init__(
         self,
@@ -100,6 +107,9 @@ class VerifiedDiagnosisLearningService:
         *,
         ownership: OwnershipScope | None = None,
     ) -> VerifiedDiagnosisLearningResult:
+        if verified.approval.decision != "APPROVED":
+            raise PermissionError("human approval is required before diagnostic knowledge promotion")
+
         evidence_refs = tuple(
             dict.fromkeys((*verified.evidence_refs, verified.verification_evidence_ref))
         )
@@ -114,7 +124,9 @@ class VerifiedDiagnosisLearningService:
                 attributes={
                     "task_shape": verified.task_shape,
                     "generalized_conditions": list(verified.generalized_conditions),
-                    "verification": "DETERMINISTIC_REPRODUCTION",
+                    "verification": "DETERMINISTIC_SIMULATION",
+                    "approval_id": verified.approval.approval_id,
+                    "approved_by": verified.approval.approved_by,
                 },
             ),
             predicate="ASSOCIATED_WITH",
@@ -122,7 +134,7 @@ class VerifiedDiagnosisLearningService:
                 entity_type="VERIFIED_FAILURE_MODE",
                 identity=verified.failure_mode,
                 attributes={
-                    "verification": "DETERMINISTIC_REPRODUCTION",
+                    "verification": "DETERMINISTIC_SIMULATION",
                 },
             ),
             source_type="RUNTIME_VERIFICATION",
@@ -152,6 +164,7 @@ class VerifiedDiagnosisLearningService:
                 definition=verified.definition,
                 run_id=verified.diagnostic_run_id,
                 evidence_refs=evidence_refs,
+                preconditions=verified.generalized_conditions,
                 capability_versions=dict(verified.capability_versions),
                 context_lens=verified.context_lens,
                 knowledge_revision=verified.knowledge_revision,
