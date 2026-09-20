@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from engineering_control_plane.application.operational_intelligence.learning import (
+    LearningApproval,
     VerifiedDiagnosisLearningInput,
     VerifiedDiagnosisLearningService,
 )
@@ -25,6 +28,14 @@ from engineering_control_plane.domain.strategy.models import (
 from engineering_control_plane.domain.task.models import TaskType
 from engineering_control_plane.domain.workflow.models import WorkflowDefinition, WorkflowNode
 from engineering_control_plane.domain.workspace.models import KnowledgeScope
+
+
+GUARDS = (
+    "event.kind == PACKAGE_REMOVED",
+    "event.business_sequence < projection.last_business_sequence",
+    "newer_package_assignment_already_applied == true",
+    "projection_relationship != expected_relationship",
+)
 
 
 class RecordingWorkspaceTasks:
@@ -69,22 +80,57 @@ class RecipeStore:
         )
 
 
-def _anomaly(parcel: str, projected_container: str) -> Observation:
+def _anomaly(package: str, projected_container: str) -> Observation:
     return Observation(
         id=ObservationId.new(),
         subject=EntityRef(
-            entity_type="PARCEL",
-            identity=parcel,
+            entity_type="PACKAGE",
+            identity=package,
             attributes={"anomaly_code": "RELATIONSHIP_PROJECTION_MISMATCH"},
         ),
-        predicate="MISMATCHES_OBSERVED_RELATIONSHIP",
+        predicate="MISMATCHES_EXPECTED_RELATIONSHIP",
         object=EntityRef(entity_type="CONTAINER", identity=projected_container),
         source_type="OPERATIONAL_DETECTOR",
         producer_capability="detector.relationship-consistency",
         knowledge_types=("RUNTIME_EVIDENCE",),
-        evidence_refs=(EvidenceId(value=f"ev_{parcel.lower()}"),),
+        evidence_refs=(EvidenceId(value=f"ev_{package.lower()}"),),
         confidence=1.0,
         run_id=WorkflowRunId.new(),
+    )
+
+
+def _approval(decision: str = "APPROVED") -> LearningApproval:
+    return LearningApproval(
+        approval_id="approval_test",
+        evidence_package_ref="evidence_pkg_test",
+        decision=decision,  # type: ignore[arg-type]
+        scope="LEARN_DIAGNOSTIC_PATTERN",
+        approved_by="human-reviewer",
+        reason="verified in deterministic simulation",
+    )
+
+
+def _learning_input(
+    definition: WorkflowDefinition,
+    *,
+    decision: str = "APPROVED",
+) -> VerifiedDiagnosisLearningInput:
+    return VerifiedDiagnosisLearningInput(
+        anomaly_code="RELATIONSHIP_PROJECTION_MISMATCH",
+        failure_mode="LATE_STALE_RELATIONSHIP_REMOVAL",
+        task_shape="operational-diagnosis:relationship-projection-mismatch",
+        generalized_conditions=GUARDS,
+        definition=definition,
+        diagnostic_run_id="run_diagnostic_1",
+        evidence_refs=("ev_production", "ev_reproduction"),
+        verification_evidence_ref="ev_verification",
+        approval=_approval(decision),
+        capability_versions={
+            "simulation.event-replay": "1.0",
+            "projection.inspect": "1.0",
+        },
+        knowledge_scope=KnowledgeScope(workspace_id="workspace-demo"),
+        environment_fingerprint="env-demo-v1",
     )
 
 
@@ -119,7 +165,7 @@ def test_observed_anomaly_delegates_to_stable_workspace_governed_task_shape():
     assert "ev_p1" in workspace_tasks.calls[0]["description"]
 
 
-def test_verified_learning_promotes_generalized_knowledge_and_enables_r0_recipe_reuse():
+def test_verified_learning_requires_human_approval_and_guard_match_for_r0_reuse():
     knowledge = RecordingKnowledgePromotion()
     recipe_store = RecipeStore()
     recipes = RecipePromotionService(
@@ -135,57 +181,83 @@ def test_verified_learning_promotes_generalized_knowledge_and_enables_r0_recipe_
         recipes=recipes,
     )
     definition = WorkflowDefinition(
-        id="operational-diagnostic-reproduction",
+        id="stale-relationship-event-recovery",
         version="1.0",
         nodes=(
             WorkflowNode(
-                id="reproduce-event-order",
-                capability="simulation.event-producer",
-                operation="start",
+                id="replay-with-guard",
+                capability="simulation.event-replay",
+                operation="apply-stale-event-guard",
             ),
         ),
     )
-    task_shape = "operational-diagnosis:relationship-projection-mismatch"
 
-    learned = learning.record_verified(
-        VerifiedDiagnosisLearningInput(
-            anomaly_code="RELATIONSHIP_PROJECTION_MISMATCH",
-            failure_mode="LATE_RELATIONSHIP_EVENT",
-            task_shape=task_shape,
-            generalized_conditions=(
-                "relationship_change.event_time < arrival.event_time",
-                "relationship_change.received_time > arrival.received_time",
-                "projection_relationship != observed_relationship",
-                "projection_converges_after_relationship_event == true",
-            ),
-            definition=definition,
-            diagnostic_run_id="run_diagnostic_1",
-            evidence_refs=("ev_production", "ev_reproduction"),
-            verification_evidence_ref="ev_verification",
-            capability_versions={"simulation.event-producer": "1.0"},
-            knowledge_scope=KnowledgeScope(workspace_id="workspace-demo"),
-            environment_fingerprint="env-demo-v1",
-        )
-    )
+    learned = learning.record_verified(_learning_input(definition))
 
     serialized = learned.observation.model_dump_json()
     assert "P1" not in serialized
     assert "C1" not in serialized
     assert "C2" not in serialized
-    assert "LATE_RELATIONSHIP_EVENT" in serialized
+    assert "LATE_STALE_RELATIONSHIP_REMOVAL" in serialized
     assert learned.knowledge.status is PromotionStatus.PROMOTED
     assert learned.recipe.maturity.value == "PROVEN"
+    assert learned.recipe.preconditions == GUARDS
 
-    decision = StrategyRouter(recipe_store).select(
+    matching = StrategyRouter(recipe_store).select(
         StrategyAssessment(
-            task_shape=task_shape,
+            task_shape=learned.recipe.task_shape,
             knowledge_sufficient=True,
             context_sufficient=True,
-            available_capability_versions={"simulation.event-producer": "1.0"},
+            observed_conditions=GUARDS,
+            available_capability_versions={
+                "simulation.event-replay": "1.0",
+                "projection.inspect": "1.0",
+            },
             environment_fingerprint="env-demo-v1",
         )
     )
+    assert matching.strategy is ExecutionStrategy.DETERMINISTIC_RECIPE
+    assert matching.reasoning_tier is ReasoningTier.NONE
 
-    assert decision.strategy is ExecutionStrategy.DETERMINISTIC_RECIPE
-    assert decision.reasoning_tier is ReasoningTier.NONE
-    assert decision.recipe_id == learned.recipe.recipe_id
+    guard_mismatch = StrategyRouter(recipe_store).select(
+        StrategyAssessment(
+            task_shape=learned.recipe.task_shape,
+            knowledge_sufficient=True,
+            context_sufficient=True,
+            observed_conditions=GUARDS[:-1],
+            available_capability_versions={
+                "simulation.event-replay": "1.0",
+                "projection.inspect": "1.0",
+            },
+            environment_fingerprint="env-demo-v1",
+        )
+    )
+    assert guard_mismatch.strategy is ExecutionStrategy.ADAPTIVE_REASONING
+    assert guard_mismatch.reasoning_tier is ReasoningTier.LIGHT
+
+
+def test_rejected_human_approval_cannot_promote_learning():
+    learning = VerifiedDiagnosisLearningService(
+        knowledge=RecordingKnowledgePromotion(),  # type: ignore[arg-type]
+        recipes=RecipePromotionService(
+            RecipeStore(),
+            policy=RecipePromotionPolicy(
+                evidence_supported_runs=1,
+                runtime_verified_runs=1,
+                proven_runs=1,
+            ),
+        ),
+    )
+    definition = WorkflowDefinition(
+        id="stale-relationship-event-recovery",
+        nodes=(
+            WorkflowNode(
+                id="verify",
+                capability="projection.inspect",
+                operation="verify",
+            ),
+        ),
+    )
+
+    with pytest.raises(PermissionError):
+        learning.record_verified(_learning_input(definition, decision="REJECTED"))
