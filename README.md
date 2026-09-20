@@ -1,120 +1,177 @@
-# Operational Intelligence Learning Loop
+# Operational Intelligence AI Labs
 
-A public, runnable reference lab for the idea:
+A public, runnable reference for one core Engineering OS idea:
 
-```text
-OBSERVE -> DETECT -> REASON -> REPRODUCE -> VERIFY -> LEARN -> REUSE
-```
+> Use model reasoning to investigate an unknown operational problem, prove the proposal with deterministic simulation and evidence, require human approval before learning, then reuse the verified workflow without another model call when the same guarded pattern appears again.
 
-The core question is simple:
+The repository now contains two connected labs aligned to the article series.
 
-> Can AI help investigate an unknown operational incident once, then let the system diagnose the same verified pattern deterministically the next time?
+## Article 2 scenario
 
-This repository contains the public learning-loop slice extracted from a larger private Engineering Control Plane. The private platform is not required to run this lab.
-
-## Scenario
-
-Business/event-time order:
+Business truth:
 
 ```text
-1. P1 assigned -> C1
-2. P1 changed C1 -> C2
-3. C2 arrived
+1. Package P1 assigned -> C1
+2. Package P1 removed from C1
+3. Package P1 assigned -> C2
 ```
 
-Observed delivery order:
+Observed processing order:
 
 ```text
-1. P1 assigned -> C1
-2. C2 arrived
-3. P1 changed C1 -> C2   (late)
+1. ASSIGN P1 -> C1
+2. ASSIGN P1 -> C2
+3. REMOVE P1 -> C1   (old event arrives late)
 ```
 
-During the delivery gap the projection says `P1 -> C1`, while independent operational evidence says `P1 -> C2`.
-
-The deterministic detector produces:
+The deliberately naive projection clears the package on the late removal and finishes at:
 
 ```text
-RELATIONSHIP_PROJECTION_MISMATCH
+P1 -> NONE
 ```
 
-On the first occurrence there is no proven recipe, so the lab invokes a bounded reasoning seam to form a hypothesis. The hypothesis has no authority by itself. The lab then reproduces the suspected ordering condition, verifies the result deterministically, promotes only the generalized diagnosis, and records a reusable verified workflow recipe.
+while the correct operational state is:
 
-On the next occurrence the same stable task shape resolves through the proven recipe:
+```text
+P1 -> C2
+```
+
+## AI Lab 001 — Unknown Incident
+
+Aligned to Article 3.
+
+```text
+SIMULATE FAILURE
+      ->
+COLLECT event + projection + runtime evidence
+      ->
+KNOW Package --assignedTo--> Container
+      ->
+DETECT invariant violation
+      ->
+BUILD bounded context
+      ->
+ONE bounded reasoning call
+      ->
+candidate diagnosis + remediation
+      ->
+SIMULATE candidate
+      ->
+VERIFY multiple deterministic cases
+      ->
+EVIDENCE PACKAGE
+      ->
+HUMAN APPROVAL
+```
+
+The model proposal is never treated as truth. The lab ends at:
+
+```text
+APPROVED_FOR_LEARNING
+```
+
+## AI Lab 002 — Learn and Reuse
+
+Aligned to Article 4.
+
+The approved Lab 001 result is split across the right responsibilities:
+
+```text
+Knowledge Spine
+  WHAT the generalized failure pattern means
+
+Workflow / Recipe Registry
+  HOW the verified recovery is executed
+
+Evidence Plane
+  WHY the system is allowed to trust it
+```
+
+A later incident using different runtime identities is matched against the learned guards. When the guards, capability versions and environment are compatible, the router selects:
 
 ```text
 DETERMINISTIC_RECIPE / R0_NONE
 LLM required = false
 ```
 
+The lab also tests the safety case: the same anomaly code with different/incomplete guards must fall back to adaptive reasoning.
+
+## Small semantic layer
+
+The public domain pack lives at:
+
+```text
+config/domain/package-container.yaml
+```
+
+It defines only the semantics needed by the lab:
+
+```text
+Package
+Container
+Package --assignedTo--> Container
+Invariant: one active container assignment
+PACKAGE_ASSIGNED
+PACKAGE_REMOVED
+```
+
+Package/container knowledge remains outside the generic Engineering Control Plane contracts.
+
 ## Repository layout
 
 ```text
 config/
   knowledge-requirements.yaml
+  domain/
+    package-container.yaml
 
 docs/
   OPERATIONAL_INTELLIGENCE_LEARNING_LOOP.md
+  AI_LABS_ROADMAP.md
 
 src/engineering_control_plane/
-  application/operational_intelligence/
-    service.py
-    learning.py
-  application/strategy/
-    promotion.py
-    router.py
+  application/
   domain/
-    ...minimal public contracts used by the extracted slice
+  ports/
 
 src/operational_intelligence_lab/
+  collectors.py
+  knowledge.py
+  models.py
+  simulation.py
+  lab_001_unknown_incident.py
+  lab_002_learned_reuse.py
   run.py
 
 tests/
   test_operational_intelligence_learning_loop.py
   test_runnable_lab.py
-
-Dockerfile
-compose.yaml
-pyproject.toml
-requirements.txt
+  test_lab_001_unknown_incident.py
+  test_lab_002_learned_reuse.py
 ```
 
-The `engineering_control_plane` package in this public repo is deliberately a **minimal contract subset**, not the full private Control Plane. It exists only so the extracted operational-intelligence slice is independently runnable and testable.
+The `engineering_control_plane` package is a deliberately small public contract subset. It is not the complete private Engineering OS.
 
-## Run with Docker
+## Run
+
+Docker:
 
 ```bash
 docker compose up --build --abort-on-container-exit
 ```
 
-No local Python installation or API key is required.
-
-## Run locally
-
-Requires Python 3.12+.
+Local Python 3.12+:
 
 ```bash
-python -m venv .venv
-```
-
-macOS/Linux:
-
-```bash
-source .venv/bin/activate
-```
-
-Windows PowerShell:
-
-```powershell
-.venv\Scripts\Activate.ps1
-```
-
-Install and run:
-
-```bash
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+python -m pip install -e ".[dev]"
 operational-intelligence-lab
+```
+
+Run one lab:
+
+```bash
+operational-intelligence-lab --lab 1
+operational-intelligence-lab --lab 2
 ```
 
 Machine-readable output:
@@ -123,32 +180,24 @@ Machine-readable output:
 operational-intelligence-lab --json
 ```
 
-## Expected result
-
-```text
-1. OBSERVE   live event delivery creates a temporary relationship mismatch
-2. DETECT    RELATIONSHIP_PROJECTION_MISMATCH
-3. REASON    first occurrence -> ADAPTIVE_REASONING / R1_LIGHT
-4. REPRODUCE hold relationship change -> emit arrival -> release delayed change
-5. VERIFY    mismatch reproduced and final state converges
-6. LEARN     generalized diagnosis + verified recipe promoted
-7. REUSE     next occurrence -> DETERMINISTIC_RECIPE / R0_NONE
-
-LLM required on known path = false
-```
-
-## Run tests
+Tests:
 
 ```bash
-python -m pip install -e ".[dev]"
 pytest -q
 ```
 
-The tests verify that runtime identities such as `P1`, `C1`, and `C2` do not become reusable knowledge and that a proven compatible diagnosis routes to deterministic R0 execution.
+## Architectural boundaries
 
-## Reasoning boundary
+- collectors establish observations and evidence;
+- the semantic/domain pack explains what Package, Container and `assignedTo` mean;
+- the LLM is a bounded reasoning resource, not execution authority;
+- simulation and deterministic verification establish whether the proposal works;
+- human approval is required before verified behavior is promoted;
+- reusable knowledge contains generalized conditions, not P1/C1/C2 runtime identities;
+- deterministic reuse requires matching learned guards, capabilities and environment;
+- a guard mismatch returns to adaptive reasoning.
 
-The public lab intentionally uses a credential-free deterministic fixture at the bounded reasoning seam. This keeps Docker and CI reproducible. In a full platform that seam can be backed by an LLM provider, but model output remains a hypothesis until deterministic reproduction and verification succeed.
+See `docs/AI_LABS_ROADMAP.md` for the article/lab sequence and future outline.
 
 ## License
 
