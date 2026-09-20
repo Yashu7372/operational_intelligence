@@ -1,0 +1,32 @@
+domain:
+  id: package-container
+  version: "1.0"
+  description: Minimal semantic domain used by AI Lab 001 and AI Lab 002.
+
+entities:
+  Package:
+    identity: packageId
+  Container:
+    identity: containerId
+
+relationships:
+  assignedTo:
+    source: Package
+    target: Container
+    meaning: The current operational container assignment for a package.
+
+invariants:
+  - id: one-active-container
+    description: A package can have at most one active container assignment.
+    relationship: assignedTo
+
+events:
+  PACKAGE_ASSIGNED:
+    effect: establish assignment
+  PACKAGE_REMOVED:
+    effect: remove the referenced assignment
+
+capabilities:
+  - projection.inspect
+  - simulation.event-replay
+  - projection.rebuild
