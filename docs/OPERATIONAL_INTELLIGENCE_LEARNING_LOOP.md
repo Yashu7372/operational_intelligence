@@ -1,143 +1,197 @@
 # Operational Intelligence Learning Loop
 
-Status: implementation slice on top of the frozen Control Plane architecture.
+Status: implementation slice aligned with the frozen Engineering OS direction.
 
-This document does **not** introduce a second runtime, knowledge system, simulator, or agent authority. It connects already-implemented Control Plane seams into one operational diagnosis loop.
+This repository demonstrates a small public version of the closed loop without introducing a second OS, knowledge system or agent authority.
+
+## Core rule
+
+```text
+Model reasoning proposes.
+Simulation reproduces.
+Deterministic verification proves.
+Human governance authorizes learning.
+Knowledge + workflow registries enable safe reuse.
+```
 
 ## Product boundaries
 
-### Application Workspace
+### Application / simulation workspace
 
-A separate small production-like application is the system being observed. It owns its application code, database, UI, producer, and natural operational event flow. A late/out-of-order event in the first incident is application/runtime behaviour, **not** an OS simulation.
+The package/container scenario is synthetic business behavior. Domain names and event rules remain outside the generic OS contracts.
 
-### Engineering Control Plane
+### Collectors / Evidence Plane
 
-The Control Plane owns governed observation-to-diagnosis execution. Existing components remain authoritative:
+Collectors gather the smallest useful incident story:
 
-- collectors produce `Observation`, `EvidenceRecord`, and diagnostics;
-- evidence remains in the Evidence Plane;
-- `WorkspaceGovernedTaskExecutionService` binds the application workspace;
-- `StrategyRouter` chooses deterministic recipe reuse or adaptive reasoning;
-- `ExecutionRecipe` / `WorkflowDefinition` remain the OS execution contract;
-- `GraphRuntimePort` keeps LangGraph replaceable;
-- simulation remains a capability behind the capability/runtime boundary;
-- model output remains a claim until deterministic verification;
-- `KnowledgePromotionService` owns canonical knowledge promotion;
-- `RecipePromotionService` owns evidence-backed workflow maturity.
+- event journal;
+- projection transitions;
+- runtime signals;
+- expected versus observed relationship.
+
+Runtime identities remain evidence. They are not promoted as reusable knowledge.
 
 ### Knowledge Spine
 
-The Knowledge Spine owns reusable semantics and evidence-backed learned diagnostic knowledge. It does not store live parcel/container ids, timestamps, current projection state, or other runtime incident instances.
-
-### LLM
-
-An LLM is used only when deterministic knowledge/recipes are insufficient. It may reason over bounded evidence and Knowledge Spine context and propose a diagnosis/reproduction plan. It does not decide anomaly truth, execute capabilities directly, verify success, or promote knowledge.
-
-## Closed loop
+The tiny domain pack describes:
 
 ```text
-Application Workspace
-        |
-        | production-like events
-        v
-Collectors / Observations / Evidence
-        |
-        v
-Deterministic anomaly detector
-        |
-        v
-OperationalIntelligenceService
-        |
-        v
-WorkspaceGovernedTaskExecutionService
-        |
-        v
-StrategyRouter
-   |                 |
-   | known/proven    | unknown
-   v                 v
-R0 deterministic   bounded adaptive reasoning
-recipe             (LLM may participate)
-   |                 |
-   +--------+--------+
-            v
-     governed diagnostic
-     reproduction/simulation
-            |
-            v
-     deterministic VERIFY
-            |
-            v
-VerifiedDiagnosisLearningService
-      |                    |
-      v                    v
-KnowledgePromotion   RecipePromotion
-      |                    |
-      +---------+----------+
-                v
-               LEARN
+Package
+Container
+Package --assignedTo--> Container
+one-active-container invariant
 ```
 
-## First occurrence
+The Knowledge Spine also receives only generalized, human-approved diagnostic patterns after verification.
 
-A detector emits an evidence-backed anomaly observation such as `RELATIONSHIP_PROJECTION_MISMATCH`. `OperationalIntelligenceService` derives a stable task shape from the anomaly type, not from runtime identities such as P1/C1/C2, and delegates to the existing workspace-governed task path.
+### Model runtime
 
-When no proven compatible diagnostic recipe exists, the current Strategy Router uses adaptive reasoning. The LLM may form a hypothesis such as `LATE_RELATIONSHIP_EVENT`, but that remains a claim. The OS must reproduce the suspected event ordering through existing simulation capabilities and create deterministic verification evidence before learning is allowed.
+A model is used only for an unknown case when no proven compatible recipe exists. Its output is a candidate diagnosis/remediation, not truth and not authority.
 
-## VERIFY -> LEARN
+### Workflow / strategy runtime
 
-`VerifiedDiagnosisLearningService` accepts only a generalized diagnosis after deterministic reproduction/verification. Runtime instance values are intentionally absent from its input contract. It records a generalized Observation through `KnowledgePromotionService` and records the verified diagnostic DAG through `RecipePromotionService`.
+`StrategyRouter` selects the lightest sufficient path:
 
-Example learned shape:
+```text
+PROVEN recipe
++ matching generalized guards
++ matching capability versions
++ compatible environment
+    -> DETERMINISTIC_RECIPE / R0_NONE
+
+otherwise
+    -> ADAPTIVE_REASONING
+```
+
+## AI Lab 001 — first occurrence
+
+The Article 2 business order is:
+
+```text
+ASSIGN P1 -> C1
+REMOVE P1 -> C1
+ASSIGN P1 -> C2
+```
+
+The failure delivery order is:
+
+```text
+ASSIGN P1 -> C1
+ASSIGN P1 -> C2
+REMOVE P1 -> C1   (late)
+```
+
+The baseline implementation intentionally applies the old removal after the newer assignment and finishes with `P1 -> NONE`.
+
+The loop is:
+
+```text
+failure
+  ->
+collect evidence
+  ->
+semantic grounding
+  ->
+deterministic mismatch detection
+  ->
+bounded reasoning
+  ->
+candidate STALE_RELATIONSHIP_EVENT_GUARD_V1
+  ->
+simulate multiple cases
+  ->
+verify all required cases
+  ->
+evidence package
+  ->
+human approval
+```
+
+The candidate rejects a relationship event when its business sequence is older than the newest accepted transition.
+
+Required public verification cases include:
+
+- Article 2 late removal;
+- normal event order;
+- duplicate newer assignment;
+- retry of the late removal.
+
+Lab 001 ends at `APPROVED_FOR_LEARNING`.
+
+## VERIFY -> APPROVE -> LEARN
+
+`VerifiedDiagnosisLearningService` now requires a `LearningApproval` before promotion.
+
+The generalized knowledge shape is:
 
 ```text
 OPERATIONAL_ANOMALY_PATTERN
   RELATIONSHIP_PROJECTION_MISMATCH
         ASSOCIATED_WITH
 VERIFIED_FAILURE_MODE
-  LATE_RELATIONSHIP_EVENT
-
-conditions:
-- relationship_change.event_time < arrival.event_time
-- relationship_change.received_time > arrival.received_time
-- projection_relationship != observed_relationship
-- projection_converges_after_relationship_event == true
+  LATE_STALE_RELATIONSHIP_REMOVAL
 ```
 
-Concrete runtime values remain referenced only by Evidence ids.
+Generalized preconditions are stored separately from runtime evidence:
 
-## Later occurrence
+```text
+event.kind == PACKAGE_REMOVED
+event.business_sequence < projection.last_business_sequence
+newer_package_assignment_already_applied == true
+projection_relationship != expected_relationship
+```
 
-For the same stable task shape, the existing promotion policy decides when the diagnostic workflow is mature enough to become `PROVEN`. Once it is proven and its capability/environment compatibility still matches, `StrategyRouter` selects:
+The workflow recipe stores the deterministic execution shape. The evidence plane retains the incident-specific reason the pattern was trusted.
+
+## AI Lab 002 — later occurrence
+
+A second incident uses different runtime data:
+
+```text
+P77
+C10
+C11
+```
+
+The same structural failure produces the same generalized guards.
+
+The router can therefore choose:
 
 ```text
 ExecutionStrategy.DETERMINISTIC_RECIPE
 ReasoningTier.R0_NONE
 ```
 
-No model invocation is required for that diagnosis path. The OS can execute the already-verified recipe, confirm the required evidence conditions, and notify the human with the known diagnosis and provenance.
+No second model call is required. The deterministic workflow applies the approved stale-event guard and verifies the final projection.
 
-The default production policy deliberately requires multiple verified runs before a recipe becomes `PROVEN`. A local portfolio/demo profile may use a stricter controlled-reproduction assumption and lower the injected `RecipePromotionPolicy` threshold without changing the router or execution architecture.
+## Safety fallback
 
-## Repository split
+An anomaly name by itself is not enough for reuse.
 
-This branch modifies only `engineering-control-plane` integration seams. The intended ecosystem remains:
+If `RELATIONSHIP_PROJECTION_MISMATCH` occurs but the learned guards do not all match, the recipe is not selected:
 
 ```text
-operational-intelligence-workspace
-  small production-like application being observed
-
-engineering-control-plane
-  observe -> diagnose -> reproduce -> verify -> learn
-
-knowledge-spine
-  semantic context + promoted verified patterns/history
-
-architecture-vault
-  external knowledge acquisition; outside this runtime loop
-
-portfolio
-  public-safe explanation and evidence projection
+same anomaly code
++ different/incomplete preconditions
+    -> ADAPTIVE_REASONING
 ```
 
-The dummy application must remain outside generic OS domain code. Parcel/container names may appear in a demo workspace or evidence fixture, never as Control Plane execution rules.
+This is the key difference between adaptive learning and blind memorization.
+
+## Public/private split
+
+```text
+AI Labs
+  synthetic proof and evidence
+
+Engineering OS
+  generalized runtime, policy, workflow, knowledge and capability architecture
+
+Project Control
+  real personal product/domain integration
+
+Employer systems
+  never copied into this public repository
+```
+
+The roadmap in `AI_LABS_ROADMAP.md` is the durable outline for the article/lab progression.
