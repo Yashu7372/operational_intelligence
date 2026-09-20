@@ -5,18 +5,28 @@ import asyncio
 from operational_intelligence_lab.run import run_demo
 
 
-def test_public_lab_closes_the_learning_loop_without_reusing_ai_for_known_pattern():
+def test_public_labs_close_the_adaptive_learning_loop():
     result = asyncio.run(run_demo())
 
-    assert result["live_incident"]["mismatch"] is True
-    assert result["first_occurrence"]["strategy"] == "ADAPTIVE_REASONING"
-    assert result["reproduction"]["mismatch_reproduced"] is True
-    assert result["reproduction"]["converged_after_release"] is True
-    assert result["verification"]["result"] == "REPRODUCED_AND_VERIFIED"
-    assert result["learning"]["knowledge_status"] == "PROMOTED"
-    assert result["learning"]["recipe_maturity"] == "PROVEN"
-    assert result["learning"]["runtime_ids_promoted"] is False
-    assert result["next_occurrence"]["strategy"] == "DETERMINISTIC_RECIPE"
-    assert result["next_occurrence"]["reasoning_tier"] == "R0_NONE"
-    assert result["next_occurrence"]["llm_required"] is False
-    assert result["next_occurrence"]["reasoning_calls_total"] == 1
+    first = result["lab_001"]
+    assert first["mismatch"] is True
+    assert first["baseline_final_projection"] is None
+    assert first["routing"]["strategy"] == "ADAPTIVE_REASONING"
+    assert first["reasoning"]["calls"] == 1
+    assert first["reasoning"]["authoritative"] is False
+    assert first["simulation"]["passed"] is True
+    assert first["human_approval"]["decision"] == "APPROVED"
+    assert first["result"] == "APPROVED_FOR_LEARNING"
+
+    second = result["lab_002"]
+    assert second["promotion"]["knowledge_status"] == "PROMOTED"
+    assert second["promotion"]["recipe_maturity"] == "PROVEN"
+    assert second["promotion"]["runtime_ids_promoted"] is False
+    assert second["known_occurrence"]["strategy"] == "DETERMINISTIC_RECIPE"
+    assert second["known_occurrence"]["reasoning_tier"] == "R0_NONE"
+    assert second["known_occurrence"]["llm_required"] is False
+    assert second["known_occurrence"]["reasoning_calls_total"] == 1
+    assert second["known_occurrence"]["final_projection"] == "C11"
+    assert second["known_occurrence"]["verified"] is True
+    assert second["guard_mismatch"]["strategy"] == "ADAPTIVE_REASONING"
+    assert second["guard_mismatch"]["llm_required"] is True
