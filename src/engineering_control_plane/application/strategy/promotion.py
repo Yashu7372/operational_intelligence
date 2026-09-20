@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from engineering_control_plane.domain.strategy.models import ProvenWorkflowRecipe, RecipeMaturity
 from engineering_control_plane.domain.workflow.models import WorkflowDefinition
@@ -25,10 +25,16 @@ class VerifiedWorkflowObservation(BaseModel):
     definition: WorkflowDefinition
     run_id: str = Field(min_length=1)
     evidence_refs: tuple[str, ...] = Field(min_length=1)
+    preconditions: tuple[str, ...] = ()
     capability_versions: dict[str, str] = Field(default_factory=dict)
     context_lens: str | None = None
     knowledge_revision: str | None = None
     environment_fingerprint: str | None = None
+
+    @field_validator("preconditions")
+    @classmethod
+    def _normalize_preconditions(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(item.strip() for item in value if item.strip()))
 
 
 class RecipePromotionService:
@@ -63,6 +69,7 @@ class RecipePromotionService:
             task_shape=observation.task_shape,
             maturity=self._maturity(len(run_ids)),
             definition=observation.definition,
+            preconditions=observation.preconditions,
             capability_versions=dict(observation.capability_versions),
             source_run_ids=run_ids,
             evidence_refs=evidence_refs,
@@ -88,6 +95,7 @@ class RecipePromotionService:
         payload = {
             "task_shape": observation.task_shape,
             "plan_id": str(observation.definition.plan_id()),
+            "preconditions": sorted(observation.preconditions),
             "capability_versions": dict(sorted(observation.capability_versions.items())),
             "environment_fingerprint": observation.environment_fingerprint,
         }
