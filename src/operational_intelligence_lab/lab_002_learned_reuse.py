@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 from typing import Any
 
 from engineering_control_plane.application.operational_intelligence.learning import (
@@ -24,6 +23,7 @@ from operational_intelligence_lab.lab_001_unknown_incident import (
     ENVIRONMENT,
     FAILURE_MODE,
     TASK_SHAPE,
+    Lab001Outcome,
     run_lab_001,
 )
 from operational_intelligence_lab.models import InMemoryRecipeStore
@@ -85,8 +85,10 @@ def _verified_workflow() -> WorkflowDefinition:
     )
 
 
-async def run_lab_002() -> dict[str, Any]:
-    discovery = await run_lab_001()
+async def run_lab_002(
+    discovery: Lab001Outcome | None = None,
+) -> dict[str, Any]:
+    discovery = discovery or await run_lab_001()
 
     recipes = InMemoryRecipeStore()
     knowledge = InMemoryKnowledgePromotion()
