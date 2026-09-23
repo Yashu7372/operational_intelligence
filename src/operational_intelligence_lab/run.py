@@ -21,7 +21,7 @@ async def run_demo() -> dict[str, Any]:
 def _print_lab_001(summary: dict[str, Any]) -> None:
     print("\nAI Lab 001 — Unknown Incident")
     print("=" * 33)
-    print("1. SIMULATE  Article 2 late-removal failure -> P1 projection becomes NONE")
+    print("1. SIMULATE  generic message hold/release creates the late-removal incident")
     print("2. COLLECT   event journal + projection transitions + runtime signals")
     print("3. KNOW      Package --assignedTo--> Container + one-active-container invariant")
     print(
@@ -30,8 +30,13 @@ def _print_lab_001(summary: dict[str, Any]) -> None:
         f"(calls={summary['reasoning']['calls']})"
     )
     print(f"             Hypothesis: {summary['reasoning']['hypothesis']}")
-    print("5. SIMULATE  candidate remediation against multiple deterministic cases")
-    print(f"6. VERIFY    all candidate cases passed = {summary['simulation']['passed']}")
+    print(
+        "5. REPRODUCE "
+        f"delivery order = {summary['reproduction']['delivery_order']} -> "
+        f"mismatch = {summary['reproduction']['mismatch_reproduced']}"
+    )
+    print("6. VERIFY    candidate remediation against four deterministic cases")
+    print(f"             all candidate cases passed = {summary['simulation']['passed']}")
     print(
         "7. APPROVE   "
         f"{summary['human_approval']['decision']} -> {summary['result']}"
@@ -100,7 +105,7 @@ def main() -> None:
         _print_lab_002(summary["lab_002"])
 
     print(
-        "\nUnknown -> bounded reasoning -> simulate -> verify -> human approve "
+        "\nUnknown -> bounded reasoning -> reproduce -> verify -> human approve "
         "-> learn -> guarded deterministic reuse\n"
     )
 

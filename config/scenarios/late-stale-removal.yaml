@@ -1,0 +1,38 @@
+scenario: late-stale-removal
+expected_container: C2
+
+messages:
+  assign-c1:
+    type: PACKAGE_ASSIGNED
+    payload:
+      package_id: P1
+      container_id: C1
+      business_sequence: 1
+  remove-c1:
+    type: PACKAGE_REMOVED
+    payload:
+      package_id: P1
+      container_id: C1
+      business_sequence: 2
+  assign-c2:
+    type: PACKAGE_ASSIGNED
+    payload:
+      package_id: P1
+      container_id: C2
+      business_sequence: 3
+
+steps:
+  - action: message.publish
+    message: assign-c1
+  - action: message.hold
+    message: remove-c1
+  - action: message.publish
+    message: remove-c1
+  - action: message.publish
+    message: assign-c2
+  - action: state.inspect
+    name: before-release
+  - action: message.release
+    message: remove-c1
+  - action: state.inspect
+    name: after-release

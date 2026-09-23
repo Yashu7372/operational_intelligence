@@ -30,7 +30,8 @@ from operational_intelligence_lab.models import (
 )
 from operational_intelligence_lab.simulation import (
     STALE_EVENT_GUARDS,
-    simulate_article2_incident,
+    reproduce_late_stale_removal,
+    simulate_lab_001_incident,
     verify_candidate,
 )
 
@@ -133,8 +134,8 @@ def _anomaly(package_id: str, projected_container: str | None) -> Observation:
 
 
 async def run_lab_001() -> Lab001Outcome:
-    # 1. Simulate the Article 2 production failure, not a successful happy path.
-    incident = simulate_article2_incident("P1", "C1", "C2")
+    # 1. Create the Article 2 failure through generic message hold/release behavior.
+    incident = simulate_lab_001_incident()
     anomaly_code = detect_relationship_mismatch(incident)
     if anomaly_code != ANOMALY_CODE:
         raise RuntimeError("Article 2 simulation did not produce the expected mismatch")
@@ -174,12 +175,17 @@ async def run_lab_001() -> Lab001Outcome:
     )
     reasoning_result = investigation.execution
 
-    # 6. The OS simulates the proposal across several deterministic scenarios.
+    # 6. Re-run the suspected mechanism through generic message hold/release.
+    reproduction = reproduce_late_stale_removal()
+    if not reproduction.mismatch_reproduced:
+        raise RuntimeError("controlled reproduction did not recreate the observed mismatch")
+
+    # 7. Verify the proposed remediation across several deterministic cases.
     simulation = verify_candidate(reasoning_result.candidate_remediation)
     if not simulation.passed:
         raise RuntimeError("candidate remediation failed deterministic simulation")
 
-    # 7. Evidence is packaged before any learning authority is granted.
+    # 8. Evidence is packaged before any learning authority is granted.
     evidence_package = EvidencePackage(
         evidence_package_id="evidence_pkg_lab001",
         anomaly_code=ANOMALY_CODE,
@@ -187,22 +193,27 @@ async def run_lab_001() -> Lab001Outcome:
             "ev_event_journal",
             "ev_projection_transitions",
             "ev_runtime_signals",
+            "ev_controlled_reproduction",
             "ev_candidate_simulation",
         ),
         semantic_context=semantic_context,
         diagnosis=reasoning_result.hypothesis,
         remediation=reasoning_result.candidate_remediation,
+        reproduction=reproduction,
         simulation=simulation,
     )
 
-    # 8. Public lab fixture for the human governance boundary.
+    # 9. Public lab fixture for the human governance boundary.
     approval = HumanApproval(
         approval_id="approval_lab001",
         evidence_package_ref=evidence_package.evidence_package_id,
         decision="APPROVED",
         scope="LEARN_DIAGNOSTIC_PATTERN",
         approved_by="human-reviewer",
-        reason="candidate remediation passed the required deterministic simulations",
+        reason=(
+            "suspected failure mechanism was reproduced and the candidate remediation "
+            "passed the required deterministic simulations"
+        ),
     )
 
     summary = {
@@ -227,6 +238,7 @@ async def run_lab_001() -> Lab001Outcome:
             "candidate_remediation": asdict(reasoning_result.candidate_remediation),
             "authoritative": False,
         },
+        "reproduction": asdict(reproduction),
         "simulation": {
             "passed": simulation.passed,
             "baseline_final": simulation.baseline_final,

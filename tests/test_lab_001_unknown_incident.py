@@ -16,6 +16,15 @@ def test_lab_001_proves_unknown_incident_before_learning():
     assert result["knowledge"]["invariant"]["id"] == "one-active-container"
     assert result["reasoning"]["calls"] == 1
     assert result["reasoning"]["authoritative"] is False
+    assert result["reproduction"]["held_message_id"] == "remove-c1"
+    assert result["reproduction"]["delivery_order"] == (
+        "assign-c1",
+        "assign-c2",
+        "remove-c1",
+    )
+    assert result["reproduction"]["before_release_container"] == "C2"
+    assert result["reproduction"]["after_release_container"] is None
+    assert result["reproduction"]["mismatch_reproduced"] is True
     assert result["simulation"]["passed"] is True
     assert len(result["simulation"]["cases"]) == 4
     assert all(case["passed"] for case in result["simulation"]["cases"])

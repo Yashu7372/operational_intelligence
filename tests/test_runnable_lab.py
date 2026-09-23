@@ -14,6 +14,7 @@ def test_public_labs_close_the_adaptive_learning_loop():
     assert first["routing"]["strategy"] == "ADAPTIVE_REASONING"
     assert first["reasoning"]["calls"] == 1
     assert first["reasoning"]["authoritative"] is False
+    assert first["reproduction"]["mismatch_reproduced"] is True
     assert first["simulation"]["passed"] is True
     assert first["human_approval"]["decision"] == "APPROVED"
     assert first["result"] == "APPROVED_FOR_LEARNING"

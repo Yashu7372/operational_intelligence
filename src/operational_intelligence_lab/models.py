@@ -54,6 +54,18 @@ class CandidateRemediation:
 
 
 @dataclass(frozen=True)
+class ReproductionReport:
+    scenario_id: str
+    expected_container: str
+    held_message_id: str
+    delivery_order: tuple[str, ...]
+    before_release_container: str | None
+    after_release_container: str | None
+    held_before_release: tuple[str, ...]
+    mismatch_reproduced: bool
+
+
+@dataclass(frozen=True)
 class SimulationCaseResult:
     name: str
     final_container: str | None
@@ -81,6 +93,7 @@ class EvidencePackage:
     semantic_context: dict[str, Any]
     diagnosis: str
     remediation: CandidateRemediation
+    reproduction: ReproductionReport
     simulation: SimulationReport
     status: str = "READY_FOR_HUMAN_REVIEW"
 
