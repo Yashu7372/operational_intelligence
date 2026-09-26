@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from engineering_control_plane.application.workspace.task_execution import (
     WorkspaceGovernedTaskExecutionService,
@@ -28,13 +29,13 @@ class OperationalDiagnosisResult:
 
 
 class OperationalIntelligenceService:
-    """Bridge deterministic anomaly observations into the existing OS task path.
+    """Bridge evidence-backed anomaly observations into the governed task path.
 
     Collectors/detectors own factual observations and evidence. This service does
-    not decide whether an anomaly exists and does not invoke an LLM directly. It
-    turns an already-detected anomaly into a stable task shape and delegates to
-    WorkspaceGovernedTaskExecutionService. The existing StrategyRouter then
-    chooses a proven deterministic recipe (R0) or bounded adaptive reasoning.
+    not decide whether an anomaly exists. It converts an already-detected anomaly
+    into a stable task shape, supplies a bounded materialized context, and delegates
+    to the workspace task runtime. The downstream strategy may choose a proven
+    deterministic recipe or bounded adaptive reasoning.
     """
 
     def __init__(self, workspace_tasks: WorkspaceGovernedTaskExecutionService) -> None:
@@ -50,6 +51,7 @@ class OperationalIntelligenceService:
         provider_name: str,
         anomaly_code: str | None = None,
         concepts: tuple[str, ...] = (),
+        context: dict[str, Any] | None = None,
         token_budget: int | None = None,
         cost_budget: float | None = None,
         ownership: OwnershipScope | None = None,
@@ -79,7 +81,7 @@ class OperationalIntelligenceService:
             f"{anomaly.subject.identity} {anomaly.predicate} "
             f"{anomaly.object.entity_type} {anomaly.object.identity}. "
             f"Evidence refs: {', '.join(evidence_refs)}. "
-            "Use bounded workspace evidence and Knowledge Spine context. "
+            "Use only the supplied bounded incident context and allowed knowledge. "
             "Any model-produced cause is a claim until reproduced and "
             "deterministically verified by governed capabilities."
         )
@@ -96,6 +98,7 @@ class OperationalIntelligenceService:
             description=description,
             expected_outcome=expected_outcome,
             concepts=normalized_concepts,
+            context=context or {},
             task_type=TaskType.OPERATIONAL_DIAGNOSIS,
             task_shape=task_shape,
             token_budget=token_budget,

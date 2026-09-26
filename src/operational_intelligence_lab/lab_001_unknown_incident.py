@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from engineering_control_plane.application.operational_intelligence.service import (
     OperationalIntelligenceService,
@@ -12,12 +14,9 @@ from engineering_control_plane.domain.knowledge.observations import EntityRef, O
 from engineering_control_plane.domain.strategy.models import StrategyAssessment
 from engineering_control_plane.domain.workspace.models import KnowledgeScope
 from engineering_control_plane.domain.workspace.runtime_config import WorkspaceRuntimeConfig
-from operational_intelligence_lab.collectors import (
-    ANOMALY_CODE,
-    collect_evidence,
-    detect_relationship_mismatch,
-    generalized_guard_conditions,
-)
+from operational_intelligence_lab.collectors import ANOMALY_CODE, generalized_guard_conditions
+from operational_intelligence_lab.dashboard import write_dashboard
+from operational_intelligence_lab.evidence import persist_lab_001_evidence
 from operational_intelligence_lab.knowledge import (
     build_bounded_semantic_context,
     load_domain_knowledge,
@@ -26,12 +25,14 @@ from operational_intelligence_lab.models import (
     CandidateRemediation,
     EvidencePackage,
     HumanApproval,
+    HumanReviewDecision,
     InMemoryRecipeStore,
 )
 from operational_intelligence_lab.simulation import (
     STALE_EVENT_GUARDS,
+    STALE_GUARD_EXPRESSION,
+    execute_lab_001_incident,
     reproduce_late_stale_removal,
-    simulate_lab_001_incident,
     verify_candidate,
 )
 
@@ -53,13 +54,46 @@ class ReasoningResult:
 
 
 class CredentialFreeReasoningSeam:
-    """Reproducible stand-in for the one bounded LLM call used by the lab."""
+    """Deterministic public stand-in for one bounded model reasoning call.
+
+    It consumes the same materialized context a real model provider would receive.
+    If the evidence does not support the stale-removal hypothesis, the seam refuses
+    to manufacture the expected answer.
+    """
 
     def __init__(self) -> None:
         self.calls = 0
 
-    async def run(self, **_: Any) -> ReasoningResult:
+    async def run(self, **kwargs: Any) -> ReasoningResult:
         self.calls += 1
+        context = kwargs.get("context")
+        if not isinstance(context, dict):
+            raise ValueError("bounded incident context is required for reasoning")
+
+        evidence = context.get("evidence")
+        semantics = context.get("semantics")
+        if not isinstance(evidence, dict) or not isinstance(semantics, dict):
+            raise ValueError("reasoning context requires evidence and semantics")
+
+        events = evidence.get("event_journal", [])
+        expected = semantics.get("expected_state", {}).get("assignedTo")
+        observed = semantics.get("observed_state", {}).get("assignedTo")
+        stale_removal = False
+        newest_seen = 0
+        for event in events:
+            business_sequence = int(event["business_sequence"])
+            if (
+                event.get("kind") == "PACKAGE_REMOVED"
+                and business_sequence < newest_seen
+            ):
+                stale_removal = True
+            newest_seen = max(newest_seen, business_sequence)
+
+        if not stale_removal or expected == observed:
+            raise RuntimeError(
+                "bounded evidence does not support the stale relationship event hypothesis"
+            )
+
         return ReasoningResult(
             hypothesis=(
                 "An older PACKAGE_REMOVED transition arrived after a newer package "
@@ -71,11 +105,11 @@ class CredentialFreeReasoningSeam:
                     "Reject a relationship event whose business sequence is older "
                     "than the newest already-accepted transition for the entity."
                 ),
-                guard="event.business_sequence < projection.last_business_sequence",
+                guard=STALE_GUARD_EXPRESSION,
             ),
             note=(
-                "Hypothesis only. The OS must reproduce the failure and prove the "
-                "candidate remediation before it can be approved for learning."
+                "Hypothesis only. Controlled reproduction and deterministic verification "
+                "must establish whether the candidate is valid."
             ),
         )
 
@@ -84,7 +118,7 @@ class CredentialFreeReasoningSeam:
 class Lab001Outcome:
     summary: dict[str, Any]
     evidence_package: EvidencePackage
-    approval: HumanApproval
+    approval: HumanApproval | None
     generalized_conditions: tuple[str, ...]
     task_shape: str
     reasoning_calls: int
@@ -133,21 +167,56 @@ def _anomaly(package_id: str, projected_container: str | None) -> Observation:
     )
 
 
-async def run_lab_001() -> Lab001Outcome:
-    # 1. Create the Article 2 failure through generic message hold/release behavior.
-    incident = simulate_lab_001_incident()
-    anomaly_code = detect_relationship_mismatch(incident)
-    if anomaly_code != ANOMALY_CODE:
-        raise RuntimeError("Article 2 simulation did not produce the expected mismatch")
+def _approval_from_review(
+    review: HumanReviewDecision | None,
+    evidence_package_id: str,
+) -> HumanApproval | None:
+    if review is None:
+        return None
+    decision = review.decision.strip().upper()
+    if decision not in {"APPROVED", "REJECTED"}:
+        raise ValueError("human review decision must be APPROVED or REJECTED")
+    if not review.approved_by.strip() or not review.reason.strip():
+        raise ValueError("human review requires approved_by and reason")
+    return HumanApproval(
+        approval_id=f"approval_{uuid4().hex[:12]}",
+        evidence_package_ref=evidence_package_id,
+        decision=decision,
+        scope="LEARN_DIAGNOSTIC_PATTERN",
+        approved_by=review.approved_by.strip(),
+        reason=review.reason.strip(),
+    )
 
-    # 2. Collect a bounded evidence story around the affected entity.
-    collected = collect_evidence(incident)
 
-    # 3. Ground the entity relationship in a tiny domain pack.
+async def run_lab_001(
+    *,
+    review: HumanReviewDecision | None = None,
+    output_root: Path | None = None,
+) -> Lab001Outcome:
+    run_id = f"lab001_{uuid4().hex[:12]}"
+    run_dir = (output_root or Path(".lab-state/lab001/runs")) / run_id
+
+    # 1. Run the production-like scenario. The collector is subscribed while it runs.
+    observed_run = execute_lab_001_incident()
+    incident = observed_run.trace
+    if not observed_run.anomalies or observed_run.anomalies[-1].code != ANOMALY_CODE:
+        raise RuntimeError("live collector did not detect the expected relationship mismatch")
+    collected = observed_run.collected
+
+    # 2. Add the smallest stable semantic meaning required for this incident.
     knowledge = load_domain_knowledge()
     semantic_context = build_bounded_semantic_context(knowledge, incident)
+    reasoning_context = {
+        "anomaly": {
+            "code": ANOMALY_CODE,
+            "package_id": incident.package_id,
+            "triggering_event_id": observed_run.anomalies[-1].triggering_event_id,
+        },
+        "evidence": collected,
+        "semantics": semantic_context,
+    }
 
-    # 4. No proven recipe exists, so the router selects adaptive reasoning.
+    # 3. No proven recipe exists, so the router selects adaptive reasoning.
     recipe_store = InMemoryRecipeStore()
     router = StrategyRouter(recipe_store)
     observed_conditions = generalized_guard_conditions(incident)
@@ -162,7 +231,7 @@ async def run_lab_001() -> Lab001Outcome:
         )
     )
 
-    # 5. One bounded reasoning call proposes a diagnosis and remediation.
+    # 4. One bounded reasoning call proposes a diagnosis and remediation.
     reasoning = CredentialFreeReasoningSeam()
     intelligence = OperationalIntelligenceService(reasoning)  # type: ignore[arg-type]
     investigation = await intelligence.investigate(
@@ -171,23 +240,39 @@ async def run_lab_001() -> Lab001Outcome:
         repository_ids=(),
         knowledge_scope=_scope(),
         provider_name="credential-free-public-lab",
-        concepts=("Package", "Container", "assignedTo", "one-active-container"),
+        concepts=(
+            "Package",
+            "Container",
+            "assignedTo",
+            "projection-matches-business-history",
+        ),
+        context=reasoning_context,
     )
     reasoning_result = investigation.execution
 
-    # 6. Re-run the suspected mechanism through generic message hold/release.
-    reproduction = reproduce_late_stale_removal()
+    # 5. Bind the proposed candidate to a controlled reproduction capability.
+    reproduction = reproduce_late_stale_removal(reasoning_result.candidate_remediation)
     if not reproduction.mismatch_reproduced:
         raise RuntimeError("controlled reproduction did not recreate the observed mismatch")
 
-    # 7. Verify the proposed remediation across several deterministic cases.
+    # 6. Resolve and execute the proposed remediation across deterministic cases.
     simulation = verify_candidate(reasoning_result.candidate_remediation)
     if not simulation.passed:
         raise RuntimeError("candidate remediation failed deterministic simulation")
 
-    # 8. Evidence is packaged before any learning authority is granted.
+    evidence_package_id = f"evidence_pkg_{run_id}"
+    approval = _approval_from_review(review, evidence_package_id)
+    if approval is None:
+        result = "READY_FOR_HUMAN_REVIEW"
+    elif approval.decision == "APPROVED":
+        result = "APPROVED_FOR_LEARNING"
+    else:
+        result = "REJECTED_FOR_LEARNING"
+
+    # 7. Evidence is packaged before any reusable learning authority is granted.
     evidence_package = EvidencePackage(
-        evidence_package_id="evidence_pkg_lab001",
+        evidence_package_id=evidence_package_id,
+        run_id=run_id,
         anomaly_code=ANOMALY_CODE,
         runtime_evidence_refs=(
             "ev_event_journal",
@@ -201,32 +286,39 @@ async def run_lab_001() -> Lab001Outcome:
         remediation=reasoning_result.candidate_remediation,
         reproduction=reproduction,
         simulation=simulation,
+        status=result,
     )
 
-    # 9. Public lab fixture for the human governance boundary.
-    approval = HumanApproval(
-        approval_id="approval_lab001",
-        evidence_package_ref=evidence_package.evidence_package_id,
-        decision="APPROVED",
-        scope="LEARN_DIAGNOSTIC_PATTERN",
-        approved_by="human-reviewer",
-        reason=(
-            "suspected failure mechanism was reproduced and the candidate remediation "
-            "passed the required deterministic simulations"
-        ),
+    dashboard_path = write_dashboard(
+        run_dir / "dashboard.html",
+        collected=collected,
+        anomaly_code=ANOMALY_CODE,
+    )
+    evidence_paths = persist_lab_001_evidence(
+        run_dir,
+        collected=collected,
+        reasoning_context=reasoning_context,
+        reasoning_result=reasoning_result,
+        evidence_package=evidence_package,
+        approval=approval,
     )
 
     summary = {
         "lab": "AI Lab 001 - Unknown Incident",
         "article_alignment": "Article 3",
+        "run_id": run_id,
         "scenario": (
             "old PACKAGE_REMOVED arrives after a newer PACKAGE_ASSIGNED and "
             "clears the correct projection"
         ),
-        "business_truth": "P1 -> C2",
+        "business_truth": f"P1 -> {incident.expected_container}",
         "baseline_final_projection": incident.final_container,
         "mismatch": incident.mismatch,
         "collectors": collected,
+        "live_detection": {
+            "detected_before_manual_review": True,
+            "anomaly": asdict(observed_run.anomalies[-1]),
+        },
         "knowledge": semantic_context,
         "routing": {
             "strategy": first_decision.strategy.value,
@@ -237,19 +329,23 @@ async def run_lab_001() -> Lab001Outcome:
             "hypothesis": reasoning_result.hypothesis,
             "candidate_remediation": asdict(reasoning_result.candidate_remediation),
             "authoritative": False,
+            "context_event_count": len(collected["event_journal"]),
         },
         "reproduction": asdict(reproduction),
         "simulation": {
             "passed": simulation.passed,
             "baseline_final": simulation.baseline_final,
+            "candidate_remediation_id": simulation.remediation.remediation_id,
             "cases": [asdict(case) for case in simulation.cases],
         },
         "evidence": {
             "package_id": evidence_package.evidence_package_id,
             "status": evidence_package.status,
+            "manifest": evidence_paths["manifest"],
         },
-        "human_approval": asdict(approval),
-        "result": "APPROVED_FOR_LEARNING",
+        "dashboard": str(dashboard_path),
+        "human_approval": asdict(approval) if approval is not None else None,
+        "result": result,
     }
 
     if tuple(STALE_EVENT_GUARDS) != observed_conditions:

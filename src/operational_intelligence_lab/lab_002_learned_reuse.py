@@ -88,7 +88,10 @@ def _verified_workflow() -> WorkflowDefinition:
 async def run_lab_002(
     discovery: Lab001Outcome | None = None,
 ) -> dict[str, Any]:
-    discovery = discovery or await run_lab_001()
+    if discovery is None:
+        raise ValueError("Lab 2 requires an explicitly reviewed Lab 1 outcome")
+    if discovery.approval is None or discovery.approval.decision != "APPROVED":
+        raise PermissionError("Lab 2 requires APPROVED Lab 1 evidence")
 
     recipes = InMemoryRecipeStore()
     knowledge = InMemoryKnowledgePromotion()

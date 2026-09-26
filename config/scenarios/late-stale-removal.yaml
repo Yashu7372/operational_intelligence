@@ -1,6 +1,4 @@
 scenario: late-stale-removal
-expected_container: C2
-
 messages:
   assign-c1:
     type: PACKAGE_ASSIGNED

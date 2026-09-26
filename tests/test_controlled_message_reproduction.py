@@ -1,7 +1,16 @@
 from __future__ import annotations
 
+from operational_intelligence_lab.models import CandidateRemediation
 from operational_intelligence_lab.runtime.messaging import ControlledMessageTransport, Message
 from operational_intelligence_lab.simulation import reproduce_late_stale_removal
+
+
+def _candidate() -> CandidateRemediation:
+    return CandidateRemediation(
+        remediation_id="STALE_RELATIONSHIP_EVENT_GUARD_V1",
+        description="reject stale relationship transitions",
+        guard="event.business_sequence < projection.last_business_sequence",
+    )
 
 
 def test_generic_transport_holds_and_releases_without_domain_logic():
@@ -25,11 +34,16 @@ def test_generic_transport_holds_and_releases_without_domain_logic():
 
 
 def test_lab_scenario_reproduces_late_removal_through_hold_release():
-    result = reproduce_late_stale_removal()
+    result = reproduce_late_stale_removal(_candidate())
 
+    assert result.candidate_remediation_id == "STALE_RELATIONSHIP_EVENT_GUARD_V1"
     assert result.held_message_id == "remove-c1"
     assert result.held_before_release == ("remove-c1",)
     assert result.delivery_order == ("assign-c1", "assign-c2", "remove-c1")
     assert result.before_release_container == "C2"
     assert result.after_release_container is None
     assert result.mismatch_reproduced is True
+    assert any(
+        item["action"] == "RELEASE" and item["message_id"] == "remove-c1"
+        for item in result.transport_timeline
+    )

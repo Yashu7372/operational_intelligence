@@ -22,7 +22,7 @@ The package/container scenario is synthetic business behavior. Domain names and 
 
 ### Collectors / Evidence Plane
 
-Collectors gather the smallest useful incident story:
+Collectors subscribe while the synthetic application runs and gather the smallest useful incident story:
 
 - event journal;
 - projection transitions;
@@ -40,6 +40,7 @@ Package
 Container
 Package --assignedTo--> Container
 one-active-container invariant
+projection-matches-business-history invariant
 ```
 
 The Knowledge Spine also receives only generalized, human-approved diagnostic patterns after verification.
@@ -86,11 +87,11 @@ The baseline implementation intentionally applies the old removal after the newe
 The loop is:
 
 ```text
-failure
+production-like scenario
   ->
-collect evidence
+live collection
   ->
-semantic grounding
+semantic expected-state resolution
   ->
 deterministic mismatch detection
   ->
@@ -116,7 +117,7 @@ Required public verification cases include:
 - duplicate newer assignment;
 - retry of the late removal.
 
-Lab 001 ends at `APPROVED_FOR_LEARNING`.
+Lab 001 first ends at `READY_FOR_HUMAN_REVIEW`. An explicit human review is required to transition the evidence package to `APPROVED_FOR_LEARNING`. The run also persists a dashboard and evidence manifest under `.lab-state/lab001/runs/<run-id>/`.
 
 ## VERIFY -> APPROVE -> LEARN
 

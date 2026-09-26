@@ -2,11 +2,22 @@ from __future__ import annotations
 
 import asyncio
 
+from operational_intelligence_lab.lab_001_unknown_incident import run_lab_001
 from operational_intelligence_lab.lab_002_learned_reuse import run_lab_002
+from operational_intelligence_lab.models import HumanReviewDecision
 
 
 def test_lab_002_reuses_only_exact_guarded_pattern_without_llm():
-    result = asyncio.run(run_lab_002())
+    discovery = asyncio.run(
+        run_lab_001(
+            review=HumanReviewDecision(
+                decision="APPROVED",
+                approved_by="test-reviewer",
+                reason="reviewed Lab 1 evidence",
+            )
+        )
+    )
+    result = asyncio.run(run_lab_002(discovery))
 
     assert result["promotion"]["human_approved"] is True
     assert result["promotion"]["recipe_maturity"] == "PROVEN"

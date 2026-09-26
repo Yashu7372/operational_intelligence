@@ -2,15 +2,25 @@ from __future__ import annotations
 
 import asyncio
 
+from operational_intelligence_lab.models import HumanReviewDecision
 from operational_intelligence_lab.run import run_demo
 
 
 def test_public_labs_close_the_adaptive_learning_loop():
-    result = asyncio.run(run_demo())
+    result = asyncio.run(
+        run_demo(
+            HumanReviewDecision(
+                decision="APPROVED",
+                approved_by="test-reviewer",
+                reason="reviewed Lab 1 verification evidence",
+            )
+        )
+    )
 
     first = result["lab_001"]
     assert first["mismatch"] is True
     assert first["baseline_final_projection"] is None
+    assert first["live_detection"]["detected_before_manual_review"] is True
     assert first["routing"]["strategy"] == "ADAPTIVE_REASONING"
     assert first["reasoning"]["calls"] == 1
     assert first["reasoning"]["authoritative"] is False

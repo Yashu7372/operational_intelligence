@@ -33,9 +33,19 @@ class ProjectionTransition:
 
 
 @dataclass(frozen=True)
+class LiveAnomaly:
+    code: str
+    package_id: str
+    expected_container: str | None
+    observed_container: str | None
+    triggering_event_id: str
+    received_sequence: int
+
+
+@dataclass(frozen=True)
 class IncidentTrace:
     package_id: str
-    expected_container: str
+    expected_container: str | None
     final_container: str | None
     events: tuple[PackageEvent, ...]
     transitions: tuple[ProjectionTransition, ...]
@@ -56,12 +66,14 @@ class CandidateRemediation:
 @dataclass(frozen=True)
 class ReproductionReport:
     scenario_id: str
-    expected_container: str
+    candidate_remediation_id: str
+    expected_container: str | None
     held_message_id: str
     delivery_order: tuple[str, ...]
     before_release_container: str | None
     after_release_container: str | None
     held_before_release: tuple[str, ...]
+    transport_timeline: tuple[dict[str, str], ...]
     mismatch_reproduced: bool
 
 
@@ -88,6 +100,7 @@ class SimulationReport:
 @dataclass(frozen=True)
 class EvidencePackage:
     evidence_package_id: str
+    run_id: str
     anomaly_code: str
     runtime_evidence_refs: tuple[str, ...]
     semantic_context: dict[str, Any]
@@ -96,6 +109,13 @@ class EvidencePackage:
     reproduction: ReproductionReport
     simulation: SimulationReport
     status: str = "READY_FOR_HUMAN_REVIEW"
+
+
+@dataclass(frozen=True)
+class HumanReviewDecision:
+    decision: str
+    approved_by: str
+    reason: str
 
 
 @dataclass(frozen=True)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from operational_intelligence_lab.models import (
     EventKind,
     IncidentTrace,
@@ -9,17 +11,28 @@ from operational_intelligence_lab.models import (
 from operational_intelligence_lab.runtime.messaging import Message
 
 
+TransitionObserver = Callable[[PackageEvent, ProjectionTransition, str | None], None]
+
+
 class PackageProjection:
     """Synthetic application projection used by the public package/container fixture."""
 
-    def __init__(self, *, expected_container: str, guard_stale_events: bool = False) -> None:
-        self.expected_container = expected_container
+    def __init__(self, *, guard_stale_events: bool = False) -> None:
         self.guard_stale_events = guard_stale_events
         self.current_container: str | None = None
         self.last_business_sequence = 0
         self._received_sequence = 0
         self._events: list[PackageEvent] = []
         self._transitions: list[ProjectionTransition] = []
+        self._observers: list[TransitionObserver] = []
+
+    def subscribe(self, observer: TransitionObserver) -> None:
+        self._observers.append(observer)
+
+    def _record(self, event: PackageEvent, transition: ProjectionTransition) -> None:
+        self._transitions.append(transition)
+        for observer in tuple(self._observers):
+            observer(event, transition, self.current_container)
 
     def consume(self, message: Message) -> None:
         self._received_sequence += 1
@@ -36,7 +49,8 @@ class PackageProjection:
         before = self.current_container
         stale = event.business_sequence < self.last_business_sequence
         if self.guard_stale_events and stale:
-            self._transitions.append(
+            self._record(
+                event,
                 ProjectionTransition(
                     event_id=event.event_id,
                     kind=event.kind.value,
@@ -46,7 +60,7 @@ class PackageProjection:
                     received_sequence=event.received_sequence,
                     accepted=False,
                     reason="stale business sequence rejected",
-                )
+                ),
             )
             return
 
@@ -56,7 +70,8 @@ class PackageProjection:
             self.current_container = None
 
         self.last_business_sequence = max(self.last_business_sequence, event.business_sequence)
-        self._transitions.append(
+        self._record(
+            event,
             ProjectionTransition(
                 event_id=event.event_id,
                 kind=event.kind.value,
@@ -66,15 +81,20 @@ class PackageProjection:
                 received_sequence=event.received_sequence,
                 accepted=True,
                 reason="applied",
-            )
+            ),
         )
 
-    def trace(self, *, runtime_signals: tuple[str, ...] = ()) -> IncidentTrace:
+    def trace(
+        self,
+        *,
+        expected_container: str | None,
+        runtime_signals: tuple[str, ...] = (),
+    ) -> IncidentTrace:
         if not self._events:
             raise RuntimeError("projection has not consumed any events")
         return IncidentTrace(
             package_id=self._events[0].package_id,
-            expected_container=self.expected_container,
+            expected_container=expected_container,
             final_container=self.current_container,
             events=tuple(self._events),
             transitions=tuple(self._transitions),

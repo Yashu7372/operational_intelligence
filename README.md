@@ -41,11 +41,11 @@ P1 -> C2
 Aligned to Article 3.
 
 ```text
-SIMULATE FAILURE
+RUN production-like scenario
       ->
-COLLECT event + projection + runtime evidence
+LIVE COLLECT event + projection + runtime evidence
       ->
-KNOW Package --assignedTo--> Container
+DERIVE expected relationship from domain semantics
       ->
 DETECT invariant violation
       ->
@@ -64,11 +64,13 @@ EVIDENCE PACKAGE
 HUMAN APPROVAL
 ```
 
-The model proposal is never treated as truth. The lab ends at:
+The model proposal is never treated as truth. A normal Lab 1 run ends at:
 
 ```text
-APPROVED_FOR_LEARNING
+READY_FOR_HUMAN_REVIEW
 ```
+
+Only an explicit human review can move that run to `APPROVED_FOR_LEARNING`.
 
 ## AI Lab 002 — Learn and Reuse
 
@@ -111,6 +113,7 @@ Package
 Container
 Package --assignedTo--> Container
 Invariant: one active container assignment
+Invariant: projection matches business-sequence history
 PACKAGE_ASSIGNED
 PACKAGE_REMOVED
 ```
@@ -138,6 +141,8 @@ src/operational_intelligence_lab/
   collectors.py
   knowledge.py
   models.py
+  dashboard.py
+  evidence.py
   simulation.py
   lab_001_unknown_incident.py
   lab_002_learned_reuse.py
@@ -167,12 +172,28 @@ python -m pip install -e ".[dev]"
 operational-intelligence-lab
 ```
 
-Run one lab:
+Run Lab 1 and generate the dashboard + evidence bundle:
 
 ```bash
 operational-intelligence-lab --lab 1
-operational-intelligence-lab --lab 2
 ```
+
+The default run stops at `READY_FOR_HUMAN_REVIEW` and prints a run ID.
+
+Generated Lab 1 artifacts are written under `.lab-state/lab001/runs/<run-id>/`, including `dashboard.html`, the bounded context, reproduction timeline, verification output, and a JSON evidence manifest.
+
+After inspecting those artifacts, approve that specific run:
+
+```bash
+operational-intelligence-lab \
+  --approve-run <run-id> \
+  --approved-by "your-name" \
+  --approval-reason "reviewed reproduction and verification evidence"
+```
+
+The approval is written back into that run's evidence bundle and its manifest moves to `APPROVED_FOR_LEARNING`.
+
+Lab 2 remains a separate follow-up lab. Its demo path can create an explicitly approved Lab 1 result when testing the complete learning loop.
 
 Machine-readable output:
 
@@ -188,7 +209,7 @@ pytest -q
 
 ## Architectural boundaries
 
-- collectors establish observations and evidence;
+- collectors observe the running projection and emit evidence-backed anomalies before manual dashboard review;
 - the semantic/domain pack explains what Package, Container and `assignedTo` mean;
 - the LLM is a bounded reasoning resource, not execution authority;
 - simulation and deterministic verification establish whether the proposal works;

@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from operational_intelligence_lab.collectors import LiveOperationalCollector
 from operational_intelligence_lab.fixtures.package_projection import PackageProjection
+from operational_intelligence_lab.knowledge import load_domain_knowledge, resolve_expected_assignment
 from operational_intelligence_lab.models import (
     CandidateRemediation,
     EventKind,
     IncidentTrace,
+    LiveAnomaly,
     PackageEvent,
     ProjectionTransition,
     ReproductionReport,
@@ -24,12 +28,45 @@ DEFAULT_SCENARIO_FILE = (
     Path(__file__).resolve().parents[2] / "config" / "scenarios" / "late-stale-removal.yaml"
 )
 
+STALE_GUARD_EXPRESSION = "event.business_sequence < projection.last_business_sequence"
+
 STALE_EVENT_GUARDS = (
     "event.kind == PACKAGE_REMOVED",
-    "event.business_sequence < projection.last_business_sequence",
+    STALE_GUARD_EXPRESSION,
     "newer_package_assignment_already_applied == true",
     "projection_relationship != expected_relationship",
 )
+
+EventGuard = Callable[[PackageEvent, int], bool]
+
+
+def stale_relationship_event_guard(event: PackageEvent, last_business_sequence: int) -> bool:
+    return (
+        event.kind is EventKind.PACKAGE_REMOVED
+        and event.business_sequence < last_business_sequence
+    )
+
+
+REMEDIATION_GUARDS: dict[str, EventGuard] = {
+    "STALE_RELATIONSHIP_EVENT_GUARD_V1": stale_relationship_event_guard,
+}
+
+REMEDIATION_SCENARIOS: dict[str, Path] = {
+    "STALE_RELATIONSHIP_EVENT_GUARD_V1": DEFAULT_SCENARIO_FILE,
+}
+
+
+def resolve_remediation_guard(remediation: CandidateRemediation) -> EventGuard:
+    if remediation.guard != STALE_GUARD_EXPRESSION:
+        raise ValueError(
+            "candidate remediation guard contract does not match the registered implementation"
+        )
+    try:
+        return REMEDIATION_GUARDS[remediation.remediation_id]
+    except KeyError as exc:
+        raise ValueError(
+            f"unsupported candidate remediation: {remediation.remediation_id}"
+        ) from exc
 
 
 def article2_events(
@@ -37,8 +74,6 @@ def article2_events(
     original_container: str,
     current_container: str,
 ) -> tuple[PackageEvent, ...]:
-    # Deterministic regression fixtures. The controlled reproduction below uses
-    # message.hold/release rather than encoding the late arrival directly.
     return (
         PackageEvent(
             event_id=f"{package_id}-assign-{original_container}",
@@ -70,19 +105,20 @@ def article2_events(
 def replay(
     events: tuple[PackageEvent, ...],
     *,
-    expected_container: str,
-    guarded: bool,
+    expected_container: str | None,
+    guarded: bool = False,
+    guard: EventGuard | None = None,
     runtime_signals: tuple[str, ...] = (),
 ) -> IncidentTrace:
     ordered = tuple(sorted(events, key=lambda item: item.received_sequence))
     current: str | None = None
     last_business_sequence = 0
     transitions: list[ProjectionTransition] = []
+    active_guard = guard or (stale_relationship_event_guard if guarded else None)
 
     for event in ordered:
         before = current
-        stale = event.business_sequence < last_business_sequence
-        if guarded and stale:
+        if active_guard is not None and active_guard(event, last_business_sequence):
             transitions.append(
                 ProjectionTransition(
                     event_id=event.event_id,
@@ -92,7 +128,7 @@ def replay(
                     business_sequence=event.business_sequence,
                     received_sequence=event.received_sequence,
                     accepted=False,
-                    reason="stale business sequence rejected",
+                    reason="candidate remediation rejected stale transition",
                 )
             )
             continue
@@ -145,26 +181,33 @@ def _scenario_message(message_id: str, definition: dict[str, Any]) -> Message:
 
 
 @dataclass(frozen=True)
-class _ControlledScenarioExecution:
+class ControlledScenarioExecution:
     trace: IncidentTrace
+    collected: dict[str, Any]
+    anomalies: tuple[LiveAnomaly, ...]
     scenario_id: str
-    expected_container: str
     released_message_id: str
     delivery_order: tuple[str, ...]
     held_before_release: tuple[str, ...]
     snapshots: dict[str, str | None]
+    transport_timeline: tuple[dict[str, str], ...]
 
 
-def _execute_controlled_scenario(path: Path | None = None) -> _ControlledScenarioExecution:
+def _execute_controlled_scenario(path: Path | None = None) -> ControlledScenarioExecution:
     scenario = _load_scenario(path)
-    expected_container = str(scenario["expected_container"])
     messages = {
         message_id: _scenario_message(message_id, definition)
         for message_id, definition in scenario["messages"].items()
     }
 
+    knowledge = load_domain_knowledge()
+    resolver = lambda events: resolve_expected_assignment(knowledge, events)
+    collector = LiveOperationalCollector(resolver)
+    collector.observe_runtime_signal("controlled-message-transport")
+
     transport = ControlledMessageTransport()
-    projection = PackageProjection(expected_container=expected_container)
+    projection = PackageProjection()
+    projection.subscribe(collector.observe_transition)
     transport.subscribe(projection.consume)
 
     snapshots: dict[str, str | None] = {}
@@ -193,37 +236,64 @@ def _execute_controlled_scenario(path: Path | None = None) -> _ControlledScenari
     if "before-release" not in snapshots or "after-release" not in snapshots:
         raise ValueError("scenario must inspect state before and after release")
 
-    return _ControlledScenarioExecution(
-        trace=projection.trace(runtime_signals=("controlled-message-hold-release",)),
+    trace = collector.trace()
+    declared_expected = scenario.get("expected_container")
+    if declared_expected is not None and str(declared_expected) != str(trace.expected_container):
+        raise ValueError(
+            "scenario expected_container disagrees with semantic business-sequence resolution"
+        )
+
+    return ControlledScenarioExecution(
+        trace=trace,
+        collected=collector.evidence(),
+        anomalies=collector.anomalies,
         scenario_id=str(scenario["scenario"]),
-        expected_container=expected_container,
         released_message_id=released_message_id,
         delivery_order=transport.delivery_order,
         held_before_release=held_before_release,
         snapshots=snapshots,
+        transport_timeline=tuple(
+            {"action": item.action, "message_id": item.message_id}
+            for item in transport.records
+        ),
     )
 
 
+def execute_lab_001_incident(path: Path | None = None) -> ControlledScenarioExecution:
+    """Run the production-like Lab 1 scenario with live collection enabled."""
+
+    return _execute_controlled_scenario(path)
+
+
 def simulate_lab_001_incident(path: Path | None = None) -> IncidentTrace:
-    """Create the public Lab 1 incident through generic transport behavior."""
+    """Compatibility wrapper returning only the final trace."""
 
-    return _execute_controlled_scenario(path).trace
+    return execute_lab_001_incident(path).trace
 
 
-def reproduce_late_stale_removal(path: Path | None = None) -> ReproductionReport:
-    """Re-run the suspected failure through generic message hold/release mechanics."""
+def reproduce_late_stale_removal(
+    remediation: CandidateRemediation,
+) -> ReproductionReport:
+    """Re-run the suspected mechanism and bind the run to the proposed candidate."""
 
-    execution = _execute_controlled_scenario(path)
+    scenario_path = REMEDIATION_SCENARIOS.get(remediation.remediation_id)
+    if scenario_path is None:
+        raise ValueError(
+            f"no controlled reproduction registered for {remediation.remediation_id}"
+        )
+    execution = _execute_controlled_scenario(scenario_path)
     return ReproductionReport(
         scenario_id=execution.scenario_id,
-        expected_container=execution.expected_container,
+        candidate_remediation_id=remediation.remediation_id,
+        expected_container=execution.trace.expected_container,
         held_message_id=execution.released_message_id,
         delivery_order=execution.delivery_order,
         before_release_container=execution.snapshots["before-release"],
         after_release_container=execution.snapshots["after-release"],
         held_before_release=execution.held_before_release,
+        transport_timeline=execution.transport_timeline,
         mismatch_reproduced=(
-            execution.snapshots["after-release"] != execution.expected_container
+            execution.snapshots["after-release"] != execution.trace.expected_container
         ),
     )
 
@@ -233,7 +303,6 @@ def simulate_article2_incident(
     original_container: str,
     current_container: str,
 ) -> IncidentTrace:
-    # Lab 2 still uses arbitrary runtime identities for the learned-reuse case.
     return replay(
         article2_events(package_id, original_container, current_container),
         expected_container=current_container,
@@ -249,6 +318,7 @@ def verify_candidate(
     original_container: str = "C1",
     current_container: str = "C2",
 ) -> SimulationReport:
+    guard = resolve_remediation_guard(remediation)
     events = article2_events(package_id, original_container, current_container)
     baseline = replay(events, expected_container=current_container, guarded=False)
 
@@ -281,7 +351,11 @@ def verify_candidate(
 
     results: list[SimulationCaseResult] = []
     for name, scenario_events, expected in scenarios:
-        trace = replay(scenario_events, expected_container=expected, guarded=True)
+        trace = replay(
+            scenario_events,
+            expected_container=expected,
+            guard=guard,
+        )
         rejected = tuple(
             item.event_id for item in trace.transitions if not item.accepted
         )
