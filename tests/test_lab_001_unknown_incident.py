@@ -26,6 +26,10 @@ def test_lab_001_proves_unknown_incident_before_learning(tmp_path: Path):
     assert result["knowledge"]["relationship"]["name"] == "assignedTo"
     assert result["knowledge"]["invariant"]["id"] == "projection-matches-business-history"
     assert result["reasoning"]["calls"] == 1
+    assert result["reasoning"]["provider"] == "deterministic"
+    assert result["reasoning"]["model"] == "deterministic-reference-v1"
+    assert result["reasoning"]["response_id"] is None
+    assert result["reasoning"]["comparison"] is None
     assert result["reasoning"]["context_event_count"] == 3
     assert result["reasoning"]["authoritative"] is False
     assert result["reproduction"]["held_message_id"] == "remove-c1"
@@ -50,6 +54,11 @@ def test_lab_001_proves_unknown_incident_before_learning(tmp_path: Path):
     assert result["result"] == "READY_FOR_HUMAN_REVIEW"
     assert Path(result["dashboard"]).exists()
     assert Path(result["evidence"]["manifest"]).exists()
+    reasoning_artifact = json.loads(
+        Path(result["evidence"]["reasoning"]).read_text(encoding="utf-8")
+    )
+    assert reasoning_artifact["provider"] == "deterministic"
+    assert reasoning_artifact["authoritative"] is False
 
 
 def test_lab_001_requires_explicit_review_to_approve_learning(tmp_path: Path):

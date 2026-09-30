@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from operational_intelligence_lab.models import EvidencePackage, HumanApproval
+from operational_intelligence_lab.reasoning import (
+    ReasoningResult,
+    compare_reasoning_results,
+    reasoning_result_as_dict,
+)
 
 
 def _source_revision() -> str:
@@ -44,7 +49,8 @@ def persist_lab_001_evidence(
     *,
     collected: dict[str, Any],
     reasoning_context: dict[str, Any],
-    reasoning_result: Any,
+    reasoning_result: ReasoningResult,
+    deterministic_reference: ReasoningResult | None,
     evidence_package: EvidencePackage,
     approval: HumanApproval | None,
 ) -> dict[str, str]:
@@ -63,15 +69,16 @@ def persist_lab_001_evidence(
 
     _write_json(paths["incident"], collected)
     _write_json(paths["context"], reasoning_context)
-    _write_json(
-        paths["reasoning"],
-        {
-            "hypothesis": reasoning_result.hypothesis,
-            "candidate_remediation": asdict(reasoning_result.candidate_remediation),
-            "note": reasoning_result.note,
-            "authoritative": False,
-        },
-    )
+    reasoning_payload = reasoning_result_as_dict(reasoning_result)
+    if deterministic_reference is not None:
+        reasoning_payload["deterministic_reference"] = reasoning_result_as_dict(
+            deterministic_reference
+        )
+        reasoning_payload["comparison"] = compare_reasoning_results(
+            reasoning_result,
+            deterministic_reference,
+        )
+    _write_json(paths["reasoning"], reasoning_payload)
     _write_json(paths["reproduction"], asdict(evidence_package.reproduction))
     _write_json(
         paths["verification"],
@@ -90,6 +97,9 @@ def persist_lab_001_evidence(
         "evidence_package_id": evidence_package.evidence_package_id,
         "status": evidence_package.status,
         "source_revision": _source_revision(),
+        "reasoning_provider": reasoning_result.provider_name,
+        "reasoning_model": reasoning_result.model_name,
+        "reasoning_response_id": reasoning_result.response_id,
         "artifacts": {name: file.name for name, file in paths.items() if name != "manifest"},
     }
     _write_json(paths["manifest"], manifest)

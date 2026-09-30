@@ -22,15 +22,19 @@ from operational_intelligence_lab.knowledge import (
     load_domain_knowledge,
 )
 from operational_intelligence_lab.models import (
-    CandidateRemediation,
     EvidencePackage,
     HumanApproval,
     HumanReviewDecision,
     InMemoryRecipeStore,
 )
+from operational_intelligence_lab.reasoning import (
+    CredentialFreeReasoningSeam,
+    compare_reasoning_results,
+    reasoning_result_as_dict,
+    resolve_reasoning_provider,
+)
 from operational_intelligence_lab.simulation import (
     STALE_EVENT_GUARDS,
-    STALE_GUARD_EXPRESSION,
     execute_lab_001_incident,
     reproduce_late_stale_removal,
     verify_candidate,
@@ -44,74 +48,6 @@ CAPABILITY_VERSIONS = {
     "projection.inspect": "1.0",
 }
 ENVIRONMENT = "public-ai-lab-v1"
-
-
-@dataclass(frozen=True)
-class ReasoningResult:
-    hypothesis: str
-    candidate_remediation: CandidateRemediation
-    note: str
-
-
-class CredentialFreeReasoningSeam:
-    """Deterministic public stand-in for one bounded model reasoning call.
-
-    It consumes the same materialized context a real model provider would receive.
-    If the evidence does not support the stale-removal hypothesis, the seam refuses
-    to manufacture the expected answer.
-    """
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    async def run(self, **kwargs: Any) -> ReasoningResult:
-        self.calls += 1
-        context = kwargs.get("context")
-        if not isinstance(context, dict):
-            raise ValueError("bounded incident context is required for reasoning")
-
-        evidence = context.get("evidence")
-        semantics = context.get("semantics")
-        if not isinstance(evidence, dict) or not isinstance(semantics, dict):
-            raise ValueError("reasoning context requires evidence and semantics")
-
-        events = evidence.get("event_journal", [])
-        expected = semantics.get("expected_state", {}).get("assignedTo")
-        observed = semantics.get("observed_state", {}).get("assignedTo")
-        stale_removal = False
-        newest_seen = 0
-        for event in events:
-            business_sequence = int(event["business_sequence"])
-            if (
-                event.get("kind") == "PACKAGE_REMOVED"
-                and business_sequence < newest_seen
-            ):
-                stale_removal = True
-            newest_seen = max(newest_seen, business_sequence)
-
-        if not stale_removal or expected == observed:
-            raise RuntimeError(
-                "bounded evidence does not support the stale relationship event hypothesis"
-            )
-
-        return ReasoningResult(
-            hypothesis=(
-                "An older PACKAGE_REMOVED transition arrived after a newer package "
-                "assignment and cleared the newer relationship."
-            ),
-            candidate_remediation=CandidateRemediation(
-                remediation_id="STALE_RELATIONSHIP_EVENT_GUARD_V1",
-                description=(
-                    "Reject a relationship event whose business sequence is older "
-                    "than the newest already-accepted transition for the entity."
-                ),
-                guard=STALE_GUARD_EXPRESSION,
-            ),
-            note=(
-                "Hypothesis only. Controlled reproduction and deterministic verification "
-                "must establish whether the candidate is valid."
-            ),
-        )
 
 
 @dataclass(frozen=True)
@@ -192,6 +128,9 @@ async def run_lab_001(
     *,
     review: HumanReviewDecision | None = None,
     output_root: Path | None = None,
+    reasoning_provider_name: str = "deterministic",
+    reasoning_model: str | None = None,
+    compare_with_deterministic: bool = False,
 ) -> Lab001Outcome:
     run_id = f"lab001_{uuid4().hex[:12]}"
     run_dir = (output_root or Path(".lab-state/lab001/runs")) / run_id
@@ -232,14 +171,17 @@ async def run_lab_001(
     )
 
     # 4. One bounded reasoning call proposes a diagnosis and remediation.
-    reasoning = CredentialFreeReasoningSeam()
+    reasoning = resolve_reasoning_provider(
+        reasoning_provider_name,
+        model_name=reasoning_model,
+    )
     intelligence = OperationalIntelligenceService(reasoning)  # type: ignore[arg-type]
     investigation = await intelligence.investigate(
         anomaly=_anomaly(incident.package_id, incident.final_container),
         workspace=_workspace(),
         repository_ids=(),
         knowledge_scope=_scope(),
-        provider_name="credential-free-public-lab",
+        provider_name=reasoning.provider_name,
         concepts=(
             "Package",
             "Container",
@@ -249,6 +191,11 @@ async def run_lab_001(
         context=reasoning_context,
     )
     reasoning_result = investigation.execution
+
+    deterministic_reference = None
+    if compare_with_deterministic and reasoning_result.provider_name != "deterministic":
+        reference_provider = CredentialFreeReasoningSeam()
+        deterministic_reference = await reference_provider.run(context=reasoning_context)
 
     # 5. Bind the proposed candidate to a controlled reproduction capability.
     reproduction = reproduce_late_stale_removal(reasoning_result.candidate_remediation)
@@ -299,6 +246,7 @@ async def run_lab_001(
         collected=collected,
         reasoning_context=reasoning_context,
         reasoning_result=reasoning_result,
+        deterministic_reference=deterministic_reference,
         evidence_package=evidence_package,
         approval=approval,
     )
@@ -325,11 +273,19 @@ async def run_lab_001(
             "reasoning_tier": first_decision.reasoning_tier.value,
         },
         "reasoning": {
+            **reasoning_result_as_dict(reasoning_result),
             "calls": reasoning.calls,
-            "hypothesis": reasoning_result.hypothesis,
-            "candidate_remediation": asdict(reasoning_result.candidate_remediation),
-            "authoritative": False,
             "context_event_count": len(collected["event_journal"]),
+            "deterministic_reference": (
+                reasoning_result_as_dict(deterministic_reference)
+                if deterministic_reference is not None
+                else None
+            ),
+            "comparison": (
+                compare_reasoning_results(reasoning_result, deterministic_reference)
+                if deterministic_reference is not None
+                else None
+            ),
         },
         "reproduction": asdict(reproduction),
         "simulation": {
@@ -342,6 +298,7 @@ async def run_lab_001(
             "package_id": evidence_package.evidence_package_id,
             "status": evidence_package.status,
             "manifest": evidence_paths["manifest"],
+            "reasoning": evidence_paths["reasoning"],
         },
         "dashboard": str(dashboard_path),
         "human_approval": asdict(approval) if approval is not None else None,

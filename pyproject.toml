@@ -14,6 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+ai = ["openai>=3.0,<4"]
 
 [project.scripts]
 operational-intelligence-lab = "operational_intelligence_lab.run:main"

@@ -28,8 +28,19 @@ def _review(
     )
 
 
-async def run_demo(review: HumanReviewDecision) -> dict[str, Any]:
-    discovery = await run_lab_001(review=review)
+async def run_demo(
+    review: HumanReviewDecision,
+    *,
+    reasoning_provider_name: str,
+    reasoning_model: str | None,
+    compare_with_deterministic: bool,
+) -> dict[str, Any]:
+    discovery = await run_lab_001(
+        review=review,
+        reasoning_provider_name=reasoning_provider_name,
+        reasoning_model=reasoning_model,
+        compare_with_deterministic=compare_with_deterministic,
+    )
     reuse = await run_lab_002(discovery)
     return {
         "lab_001": discovery.summary,
@@ -48,12 +59,24 @@ def _print_lab_001(summary: dict[str, Any]) -> None:
         f"observed={summary['baseline_final_projection']}"
     )
     print("3. KNOW      Package --assignedTo--> Container + projection consistency")
+    provider = summary["reasoning"]["provider"]
+    model = summary["reasoning"]["model"]
+    provider_label = provider if not model else f"{provider}:{model}"
     print(
         "4. REASON    "
         f"{summary['routing']['strategy']} / {summary['routing']['reasoning_tier']} "
-        f"(calls={summary['reasoning']['calls']})"
+        f"(provider={provider_label}, calls={summary['reasoning']['calls']})"
     )
     print(f"             Hypothesis: {summary['reasoning']['hypothesis']}")
+    if summary["reasoning"]["response_id"]:
+        print(f"             Response: {summary['reasoning']['response_id']}")
+    if summary["reasoning"]["comparison"] is not None:
+        comparison = summary["reasoning"]["comparison"]
+        print(
+            "             Deterministic reference: "
+            f"same remediation={comparison['same_remediation_id']}, "
+            f"same guard={comparison['same_guard_contract']}"
+        )
     print(
         "5. REPRODUCE "
         f"delivery order = {summary['reproduction']['delivery_order']} -> "
@@ -62,6 +85,7 @@ def _print_lab_001(summary: dict[str, Any]) -> None:
     print("6. VERIFY    candidate remediation against four deterministic cases")
     print(f"             all candidate cases passed = {summary['simulation']['passed']}")
     print(f"7. EVIDENCE  {summary['evidence']['manifest']}")
+    print(f"             reasoning = {summary['evidence']['reasoning']}")
     print(f"8. DASHBOARD {summary['dashboard']}")
     if summary["human_approval"] is None:
         print("9. APPROVE   pending explicit human review")
@@ -99,17 +123,35 @@ async def _run_selected(
     lab: str,
     *,
     review: HumanReviewDecision | None,
+    reasoning_provider_name: str,
+    reasoning_model: str | None,
+    compare_with_deterministic: bool,
 ) -> dict[str, Any]:
     if lab == "1":
-        first = await run_lab_001(review=review)
+        first = await run_lab_001(
+            review=review,
+            reasoning_provider_name=reasoning_provider_name,
+            reasoning_model=reasoning_model,
+            compare_with_deterministic=compare_with_deterministic,
+        )
         return {"lab_001": first.summary}
     if review is None:
         raise ValueError("Lab 2/all requires explicit Lab 1 approval via --approve-learning")
     if lab == "2":
-        first = await run_lab_001(review=review)
+        first = await run_lab_001(
+            review=review,
+            reasoning_provider_name=reasoning_provider_name,
+            reasoning_model=reasoning_model,
+            compare_with_deterministic=compare_with_deterministic,
+        )
         second = await run_lab_002(first)
         return {"lab_002": second}
-    return await run_demo(review)
+    return await run_demo(
+        review,
+        reasoning_provider_name=reasoning_provider_name,
+        reasoning_model=reasoning_model,
+        compare_with_deterministic=compare_with_deterministic,
+    )
 
 
 def main() -> None:
@@ -124,6 +166,21 @@ def main() -> None:
     )
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     parser.add_argument(
+        "--reasoning-provider",
+        choices=("deterministic", "openai"),
+        default="deterministic",
+        help="Use the credential-free reference or a real OpenAI Responses API call.",
+    )
+    parser.add_argument(
+        "--model",
+        help="OpenAI model ID. Defaults to OPENAI_MODEL or gpt-5.6-luna.",
+    )
+    parser.add_argument(
+        "--compare-with-deterministic",
+        action="store_true",
+        help="With a real provider, also persist the deterministic reference result.",
+    )
+    parser.add_argument(
         "--approve-learning",
         action="store_true",
         help="Demo path for Lab 2/all: explicitly approve a fresh Lab 1 result.",
@@ -136,6 +193,9 @@ def main() -> None:
     parser.add_argument("--approved-by", help="Human reviewer identity for approval evidence.")
     parser.add_argument("--approval-reason", help="Reason recorded with human approval.")
     args = parser.parse_args()
+
+    if args.model and args.reasoning_provider != "openai":
+        parser.error("--model can only be used with --reasoning-provider openai")
 
     if args.approve_run:
         if args.approve_learning:
@@ -177,8 +237,16 @@ def main() -> None:
             approved_by=args.approved_by,
             approval_reason=args.approval_reason,
         )
-        summary = asyncio.run(_run_selected(args.lab, review=review))
-    except ValueError as exc:
+        summary = asyncio.run(
+            _run_selected(
+                args.lab,
+                review=review,
+                reasoning_provider_name=args.reasoning_provider,
+                reasoning_model=args.model,
+                compare_with_deterministic=args.compare_with_deterministic,
+            )
+        )
+    except (ValueError, RuntimeError) as exc:
         parser.error(str(exc))
 
     if args.json:
