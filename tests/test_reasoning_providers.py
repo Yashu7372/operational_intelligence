@@ -211,3 +211,25 @@ def test_cli_provider_rejects_unsupported_remediation_and_cli_failure():
 def test_resolver_knows_cli_providers():
     assert isinstance(resolve_reasoning_provider("claude-cli"), ClaudeCliReasoningProvider)
     assert isinstance(resolve_reasoning_provider("codex-cli"), CodexCliReasoningProvider)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda p: p.pop("confidence"),
+        lambda p: p.update(extra="x"),
+        lambda p: p.update(confidence=7),
+        lambda p: p.update(candidate_remediation="STALE_RELATIONSHIP_EVENT_GUARD_V1"),
+        lambda p: p["candidate_remediation"].pop("guard"),
+        lambda p: p.update(evidence_refs="remove-c1"),
+    ],
+)
+def test_cli_provider_rejects_malformed_payload(mutate):
+    payload = _payload()
+    mutate(payload)
+
+    async def runner(argv, stdin_text, timeout):
+        return 0, json.dumps({"structured_output": payload}), ""
+
+    with pytest.raises(RuntimeError, match="required schema"):
+        asyncio.run(ClaudeCliReasoningProvider(runner=runner).run(context=_context()))

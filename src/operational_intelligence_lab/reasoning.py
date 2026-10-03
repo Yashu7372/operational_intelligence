@@ -188,13 +188,27 @@ def _reasoning_instructions() -> str:
 def _validate_payload(
     payload: Any, evidence: dict[str, Any], *, label: str
 ) -> tuple[tuple[str, ...], CandidateRemediation]:
-    if not isinstance(payload, dict) or not {
-        "hypothesis",
-        "evidence_refs",
-        "confidence",
-        "candidate_remediation",
-    } <= payload.keys():
-        raise RuntimeError(f"{label} reasoning response did not match the required schema")
+    schema_error = f"{label} reasoning response did not match the required schema"
+    top_keys = {"hypothesis", "evidence_refs", "confidence", "candidate_remediation"}
+    candidate_keys = {"remediation_id", "description", "guard"}
+    if not isinstance(payload, dict) or set(payload) != top_keys:
+        raise RuntimeError(schema_error)
+    candidate_payload = payload["candidate_remediation"]
+    confidence = payload["confidence"]
+    if (
+        not isinstance(payload["hypothesis"], str)
+        or not payload["hypothesis"].strip()
+        or not isinstance(payload["evidence_refs"], list)
+        or not all(isinstance(ref, str) for ref in payload["evidence_refs"])
+        or isinstance(confidence, bool)
+        or not isinstance(confidence, (int, float))
+        or not 0 <= confidence <= 1
+        or not isinstance(candidate_payload, dict)
+        or set(candidate_payload) != candidate_keys
+        or not all(isinstance(candidate_payload[key], str) for key in candidate_keys)
+        or not candidate_payload["description"].strip()
+    ):
+        raise RuntimeError(schema_error)
     event_ids = {
         str(event.get("event_id"))
         for event in evidence.get("event_journal", [])
@@ -207,7 +221,6 @@ def _validate_payload(
             f"{label} reasoning referenced evidence not present in the bounded context: "
             + ", ".join(unknown_refs)
         )
-    candidate_payload = payload["candidate_remediation"]
     remediation_id = str(candidate_payload["remediation_id"])
     guard = str(candidate_payload["guard"])
     if remediation_id == UNSUPPORTED_REMEDIATION_ID:
