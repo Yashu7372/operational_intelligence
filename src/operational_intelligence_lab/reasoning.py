@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import tempfile
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Protocol
 
 from operational_intelligence_lab.models import CandidateRemediation
@@ -12,6 +16,7 @@ from operational_intelligence_lab.simulation import STALE_GUARD_EXPRESSION
 DEFAULT_OPENAI_MODEL = "gpt-5.6-luna"
 SUPPORTED_REMEDIATION_ID = "STALE_RELATIONSHIP_EVENT_GUARD_V1"
 UNSUPPORTED_REMEDIATION_ID = "UNSUPPORTED"
+REASONING_PROVIDER_CHOICES = ("deterministic", "openai", "claude-cli", "codex-cli")
 
 
 @dataclass(frozen=True)
@@ -131,6 +136,96 @@ class CredentialFreeReasoningSeam:
         )
 
 
+MODEL_NOTE = (
+    "Model-produced candidate only. Controlled reproduction and deterministic "
+    "verification remain authoritative for the lab result."
+)
+
+
+def _reasoning_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "hypothesis": {"type": "string", "minLength": 1},
+            "evidence_refs": {"type": "array", "items": {"type": "string"}},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "candidate_remediation": {
+                "type": "object",
+                "properties": {
+                    "remediation_id": {
+                        "type": "string",
+                        "enum": [SUPPORTED_REMEDIATION_ID, UNSUPPORTED_REMEDIATION_ID],
+                    },
+                    "description": {"type": "string", "minLength": 1},
+                    "guard": {
+                        "type": "string",
+                        "enum": [STALE_GUARD_EXPRESSION, UNSUPPORTED_REMEDIATION_ID],
+                    },
+                },
+                "required": ["remediation_id", "description", "guard"],
+                "additionalProperties": False,
+            },
+        },
+        "required": ["hypothesis", "evidence_refs", "confidence", "candidate_remediation"],
+        "additionalProperties": False,
+    }
+
+
+def _reasoning_instructions() -> str:
+    return (
+        "You are a bounded operational-incident reasoning provider. "
+        "Use only the supplied incident context. Do not invent events, state, or evidence. "
+        "evidence_refs must contain only event_id values present in evidence.event_journal. "
+        "Produce a concise testable hypothesis, not hidden chain-of-thought. "
+        "You have no execution authority. The remediation catalog contains one supported "
+        f"candidate: {SUPPORTED_REMEDIATION_ID}, with guard contract "
+        f"{STALE_GUARD_EXPRESSION!r}. Select it only when the evidence supports a stale "
+        "relationship transition. Otherwise use remediation_id "
+        f"{UNSUPPORTED_REMEDIATION_ID!r} and guard {UNSUPPORTED_REMEDIATION_ID!r}."
+    )
+
+
+def _validate_payload(
+    payload: Any, evidence: dict[str, Any], *, label: str
+) -> tuple[tuple[str, ...], CandidateRemediation]:
+    if not isinstance(payload, dict) or not {
+        "hypothesis",
+        "evidence_refs",
+        "confidence",
+        "candidate_remediation",
+    } <= payload.keys():
+        raise RuntimeError(f"{label} reasoning response did not match the required schema")
+    event_ids = {
+        str(event.get("event_id"))
+        for event in evidence.get("event_journal", [])
+        if event.get("event_id")
+    }
+    returned_refs = tuple(str(item) for item in payload["evidence_refs"])
+    unknown_refs = sorted(set(returned_refs) - event_ids)
+    if unknown_refs:
+        raise RuntimeError(
+            f"{label} reasoning referenced evidence not present in the bounded context: "
+            + ", ".join(unknown_refs)
+        )
+    candidate_payload = payload["candidate_remediation"]
+    remediation_id = str(candidate_payload["remediation_id"])
+    guard = str(candidate_payload["guard"])
+    if remediation_id == UNSUPPORTED_REMEDIATION_ID:
+        raise RuntimeError(
+            f"{label} reasoning did not find a supported remediation candidate: "
+            + str(payload["hypothesis"])
+        )
+    if remediation_id != SUPPORTED_REMEDIATION_ID or guard != STALE_GUARD_EXPRESSION:
+        raise RuntimeError(
+            f"{label} reasoning candidate does not match the registered remediation contract"
+        )
+    return returned_refs, CandidateRemediation(
+        remediation_id=remediation_id,
+        description=str(candidate_payload["description"]),
+        guard=guard,
+    )
+
+
 class OpenAIReasoningProvider:
     provider_name = "openai"
 
@@ -159,53 +254,8 @@ class OpenAIReasoningProvider:
     async def run(self, **kwargs: Any) -> ReasoningResult:
         context, evidence, _semantics = _bounded_context(kwargs)
         self.calls += 1
-        event_ids = {
-            str(event.get("event_id"))
-            for event in evidence.get("event_journal", [])
-            if event.get("event_id")
-        }
-        schema = {
-            "type": "object",
-            "properties": {
-                "hypothesis": {"type": "string", "minLength": 1},
-                "evidence_refs": {"type": "array", "items": {"type": "string"}},
-                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                "candidate_remediation": {
-                    "type": "object",
-                    "properties": {
-                        "remediation_id": {
-                            "type": "string",
-                            "enum": [SUPPORTED_REMEDIATION_ID, UNSUPPORTED_REMEDIATION_ID],
-                        },
-                        "description": {"type": "string", "minLength": 1},
-                        "guard": {
-                            "type": "string",
-                            "enum": [STALE_GUARD_EXPRESSION, UNSUPPORTED_REMEDIATION_ID],
-                        },
-                    },
-                    "required": ["remediation_id", "description", "guard"],
-                    "additionalProperties": False,
-                },
-            },
-            "required": [
-                "hypothesis",
-                "evidence_refs",
-                "confidence",
-                "candidate_remediation",
-            ],
-            "additionalProperties": False,
-        }
-        instructions = (
-            "You are a bounded operational-incident reasoning provider. "
-            "Use only the supplied incident context. Do not invent events, state, or evidence. "
-            "evidence_refs must contain only event_id values present in evidence.event_journal. "
-            "Produce a concise testable hypothesis, not hidden chain-of-thought. "
-            "You have no execution authority. The remediation catalog contains one supported "
-            f"candidate: {SUPPORTED_REMEDIATION_ID}, with guard contract "
-            f"{STALE_GUARD_EXPRESSION!r}. Select it only when the evidence supports a stale "
-            "relationship transition. Otherwise use remediation_id "
-            f"{UNSUPPORTED_REMEDIATION_ID!r} and guard {UNSUPPORTED_REMEDIATION_ID!r}."
-        )
+        schema = _reasoning_schema()
+        instructions = _reasoning_instructions()
         response = await self._client_or_create().responses.create(
             model=self.model_name,
             instructions=instructions,
@@ -227,26 +277,7 @@ class OpenAIReasoningProvider:
         except json.JSONDecodeError as exc:
             raise RuntimeError("OpenAI reasoning response was not valid JSON") from exc
 
-        returned_refs = tuple(str(item) for item in payload["evidence_refs"])
-        unknown_refs = sorted(set(returned_refs) - event_ids)
-        if unknown_refs:
-            raise RuntimeError(
-                "OpenAI reasoning referenced evidence not present in the bounded context: "
-                + ", ".join(unknown_refs)
-            )
-
-        candidate_payload = payload["candidate_remediation"]
-        remediation_id = str(candidate_payload["remediation_id"])
-        guard = str(candidate_payload["guard"])
-        if remediation_id == UNSUPPORTED_REMEDIATION_ID:
-            raise RuntimeError(
-                "OpenAI reasoning did not find a supported remediation candidate: "
-                + str(payload["hypothesis"])
-            )
-        if remediation_id != SUPPORTED_REMEDIATION_ID or guard != STALE_GUARD_EXPRESSION:
-            raise RuntimeError(
-                "OpenAI reasoning candidate does not match the registered remediation contract"
-            )
+        returned_refs, candidate = _validate_payload(payload, evidence, label="OpenAI")
 
         usage = getattr(response, "usage", None)
         input_tokens = getattr(usage, "input_tokens", None) if usage is not None else None
@@ -254,15 +285,8 @@ class OpenAIReasoningProvider:
 
         return ReasoningResult(
             hypothesis=str(payload["hypothesis"]),
-            candidate_remediation=CandidateRemediation(
-                remediation_id=remediation_id,
-                description=str(candidate_payload["description"]),
-                guard=guard,
-            ),
-            note=(
-                "Model-produced candidate only. Controlled reproduction and deterministic "
-                "verification remain authoritative for the lab result."
-            ),
+            candidate_remediation=candidate,
+            note=MODEL_NOTE,
             provider_name=self.provider_name,
             model_name=str(getattr(response, "model", None) or self.model_name),
             response_id=str(getattr(response, "id", "")) or None,
@@ -271,6 +295,185 @@ class OpenAIReasoningProvider:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
         )
+
+
+# Runner signature: (argv, stdin_text, timeout_seconds) -> (returncode, stdout, stderr)
+CliRunner = Callable[[list[str], str, float], Awaitable[tuple[int, str, str]]]
+
+DEFAULT_CLI_TIMEOUT_SECONDS = 300.0
+
+
+async def _subprocess_runner(
+    argv: list[str], stdin_text: str, timeout: float
+) -> tuple[int, str, str]:
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"CLI executable {argv[0]!r} was not found on PATH; install it and sign in first"
+        ) from exc
+    try:
+        out, err = await asyncio.wait_for(
+            proc.communicate(stdin_text.encode()), timeout=timeout
+        )
+    except asyncio.TimeoutError as exc:
+        proc.kill()
+        await proc.wait()
+        raise RuntimeError(f"{argv[0]} timed out after {timeout:.0f}s") from exc
+    return proc.returncode or 0, out.decode(errors="replace"), err.decode(errors="replace")
+
+
+def _extract_json_object(text: str) -> dict[str, Any]:
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        text = text.split("\n", 1)[1] if "\n" in text else text
+        text = text.rsplit("```", 1)[0] if "```" in text else text
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        first, last = text.find("{"), text.rfind("}")
+        if first == -1 or last <= first:
+            raise RuntimeError("CLI reasoning response was not valid JSON") from None
+        try:
+            value = json.loads(text[first : last + 1])
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("CLI reasoning response was not valid JSON") from exc
+    if not isinstance(value, dict):
+        raise RuntimeError("CLI reasoning response was not a JSON object")
+    return value
+
+
+class _CliReasoningProvider:
+    """Shared plumbing for agent CLIs used as reasoning providers.
+
+    The CLI is invoked non-interactively, read-only, with the same bounded
+    context, schema and validation as the OpenAI provider. It has no authority.
+    """
+
+    provider_name = "cli"
+    label = "CLI"
+
+    def __init__(
+        self,
+        *,
+        model_name: str | None = None,
+        runner: CliRunner | None = None,
+        executable: str | None = None,
+        timeout: float = DEFAULT_CLI_TIMEOUT_SECONDS,
+    ) -> None:
+        self.model_name = model_name
+        self._runner = runner or _subprocess_runner
+        self._executable = executable
+        self._timeout = timeout
+        self.calls = 0
+
+    def _prompt(self, context: dict[str, Any], schema: dict[str, Any]) -> str:
+        return (
+            _reasoning_instructions()
+            + "\n\nRespond with ONLY a single JSON object matching this JSON Schema, "
+            "no prose and no code fences:\n"
+            + json.dumps(schema, sort_keys=True)
+            + "\n\nIncident context:\n"
+            + json.dumps(context, indent=2, sort_keys=True, default=str)
+        )
+
+    async def _invoke(self, prompt: str, schema: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Return (payload, metadata) where metadata may hold model/response_id/tokens."""
+        raise NotImplementedError
+
+    async def run(self, **kwargs: Any) -> ReasoningResult:
+        context, evidence, _semantics = _bounded_context(kwargs)
+        self.calls += 1
+        schema = _reasoning_schema()
+        payload, meta = await self._invoke(self._prompt(context, schema), schema)
+        refs, candidate = _validate_payload(payload, evidence, label=self.label)
+        try:
+            confidence = float(payload["confidence"])
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"{self.label} reasoning confidence was not a number") from exc
+        return ReasoningResult(
+            hypothesis=str(payload["hypothesis"]),
+            candidate_remediation=candidate,
+            note=MODEL_NOTE,
+            provider_name=self.provider_name,
+            model_name=meta.get("model") or self.model_name,
+            response_id=meta.get("response_id"),
+            evidence_refs=refs,
+            confidence=confidence,
+            input_tokens=meta.get("input_tokens"),
+            output_tokens=meta.get("output_tokens"),
+        )
+
+
+class ClaudeCliReasoningProvider(_CliReasoningProvider):
+    """Uses the Claude Code CLI (`claude -p`), authenticated by its own login."""
+
+    provider_name = "claude-cli"
+    label = "Claude CLI"
+
+    async def _invoke(self, prompt, schema):
+        argv = [
+            self._executable or os.getenv("CLAUDE_CLI") or "claude",
+            "-p",
+            "--output-format", "json",
+            "--json-schema", json.dumps(schema),
+            "--tools", "",
+        ]
+        if self.model_name:
+            argv += ["--model", self.model_name]
+        code, out, err = await self._runner(argv, prompt, self._timeout)
+        if code != 0:
+            raise RuntimeError(f"claude CLI exited with {code}: {err.strip()[:500]}")
+        envelope = _extract_json_object(out)
+        if envelope.get("is_error"):
+            raise RuntimeError(f"claude CLI reported an error: {str(envelope.get('result'))[:500]}")
+        structured = envelope.get("structured_output")
+        payload = structured if isinstance(structured, dict) else _extract_json_object(
+            str(envelope.get("result") or "")
+        )
+        usage = envelope.get("usage") or {}
+        return payload, {
+            "response_id": envelope.get("session_id"),
+            "input_tokens": usage.get("input_tokens"),
+            "output_tokens": usage.get("output_tokens"),
+        }
+
+
+class CodexCliReasoningProvider(_CliReasoningProvider):
+    """Uses the OpenAI Codex CLI (`codex exec`), authenticated by its own login."""
+
+    provider_name = "codex-cli"
+    label = "Codex CLI"
+
+    async def _invoke(self, prompt, schema):
+        with tempfile.TemporaryDirectory(prefix="oi-codex-") as tmp:
+            schema_path = Path(tmp) / "schema.json"
+            out_path = Path(tmp) / "last-message.txt"
+            schema_path.write_text(json.dumps(schema))
+            argv = [
+                self._executable or os.getenv("CODEX_CLI") or "codex",
+                "exec",
+                "--sandbox", "read-only",
+                "--skip-git-repo-check",
+                "--ephemeral",
+                "--output-schema", str(schema_path),
+                "--output-last-message", str(out_path),
+            ]
+            if self.model_name:
+                argv += ["--model", self.model_name]
+            argv.append("-")  # read prompt from stdin
+            code, _out, err = await self._runner(argv, prompt, self._timeout)
+            if code != 0:
+                raise RuntimeError(f"codex CLI exited with {code}: {err.strip()[:500]}")
+            if not out_path.exists():
+                raise RuntimeError("codex CLI did not write a final message")
+            return _extract_json_object(out_path.read_text()), {}
 
 
 def resolve_reasoning_provider(
@@ -283,6 +486,11 @@ def resolve_reasoning_provider(
         return CredentialFreeReasoningSeam()
     if normalized == "openai":
         return OpenAIReasoningProvider(model_name=model_name)
+    if normalized in {"claude-cli", "claude"}:
+        return ClaudeCliReasoningProvider(model_name=model_name)
+    if normalized in {"codex-cli", "codex"}:
+        return CodexCliReasoningProvider(model_name=model_name)
     raise ValueError(
-        "unsupported reasoning provider; expected one of: deterministic, openai"
+        "unsupported reasoning provider; expected one of: "
+        + ", ".join(REASONING_PROVIDER_CHOICES)
     )

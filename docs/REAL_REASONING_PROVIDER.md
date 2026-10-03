@@ -1,6 +1,6 @@
 # Real reasoning provider for Lab 1
 
-Lab 1 keeps the credential-free deterministic reasoning seam as its default, but it can also make one real OpenAI Responses API call against the exact same bounded incident context.
+Lab 1 keeps the credential-free deterministic reasoning seam as its default, but it can also make one real model call against the exact same bounded incident context, through the OpenAI Responses API (API key) or a local Claude Code / Codex CLI (its own login, no API key).
 
 ## Install
 
@@ -18,7 +18,16 @@ Bash/zsh:
 
     export OPENAI_API_KEY="your-key"
 
-## Run with a real model
+## Use a local Claude Code or Codex CLI instead of an API key
+
+Install and sign in to the CLI once (`claude` or `codex`); the adapter shells out to it non-interactively.
+
+    operational-intelligence-lab --lab 1 --reasoning-provider claude-cli
+    operational-intelligence-lab --lab 1 --reasoning-provider codex-cli --model <codex-model>
+
+Same bounded context, same JSON schema, same validation as the OpenAI provider (evidence refs must exist in the journal, the candidate must match the registered remediation contract). Claude runs with tools disabled; Codex runs in a read-only sandbox. Override the executable with `CLAUDE_CLI` / `CODEX_CLI`. `--model` is optional; without it the CLI's configured model is used. `--compare-with-deterministic` works with these too.
+
+## Run with a real model (OpenAI API)
 
 Low-cost default model:
 

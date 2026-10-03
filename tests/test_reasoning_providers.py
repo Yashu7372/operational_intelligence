@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from operational_intelligence_lab.reasoning import (
+    ClaudeCliReasoningProvider,
+    CodexCliReasoningProvider,
     CredentialFreeReasoningSeam,
     OpenAIReasoningProvider,
     compare_reasoning_results,
+    resolve_reasoning_provider,
 )
 from operational_intelligence_lab.simulation import STALE_GUARD_EXPRESSION
 
@@ -112,3 +118,96 @@ def test_real_and_deterministic_results_can_be_compared():
     assert comparison["same_remediation_id"] is True
     assert comparison["same_guard_contract"] is True
     assert comparison["same_hypothesis_text"] is False
+
+
+def _payload(refs=("assign-c2", "remove-c1"), remediation="STALE_RELATIONSHIP_EVENT_GUARD_V1"):
+    return {
+        "hypothesis": "The removal for C1 is stale.",
+        "evidence_refs": list(refs),
+        "confidence": 0.8,
+        "candidate_remediation": {
+            "remediation_id": remediation,
+            "description": "Reject stale relationship transitions.",
+            "guard": STALE_GUARD_EXPRESSION if remediation != "UNSUPPORTED" else "UNSUPPORTED",
+        },
+    }
+
+
+def test_claude_cli_provider_parses_structured_output():
+    seen = {}
+
+    async def runner(argv, stdin_text, timeout):
+        seen.update(argv=argv, stdin=stdin_text)
+        envelope = {
+            "is_error": False,
+            "structured_output": _payload(),
+            "session_id": "sess-1",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+        return 0, json.dumps(envelope), ""
+
+    provider = ClaudeCliReasoningProvider(model_name="sonnet", runner=runner)
+    result = asyncio.run(provider.run(context=_context()))
+
+    assert result.provider_name == "claude-cli"
+    assert result.response_id == "sess-1"
+    assert result.input_tokens == 10
+    assert result.candidate_remediation.guard == STALE_GUARD_EXPRESSION
+    assert seen["argv"][:2] == ["claude", "-p"]
+    assert "--model" in seen["argv"] and "sonnet" in seen["argv"]
+    assert "remove-c1" in seen["stdin"]
+
+
+def test_claude_cli_provider_falls_back_to_result_text():
+    async def runner(argv, stdin_text, timeout):
+        text = "```json\n" + json.dumps(_payload()) + "\n```"
+        return 0, json.dumps({"result": text}), ""
+
+    provider = ClaudeCliReasoningProvider(runner=runner)
+    result = asyncio.run(provider.run(context=_context()))
+    assert result.evidence_refs == ("assign-c2", "remove-c1")
+
+
+def test_codex_cli_provider_reads_last_message_file():
+    seen = {}
+
+    async def runner(argv, stdin_text, timeout):
+        seen["argv"] = argv
+        Path(argv[argv.index("--output-last-message") + 1]).write_text(json.dumps(_payload()))
+        return 0, "", ""
+
+    provider = CodexCliReasoningProvider(runner=runner)
+    result = asyncio.run(provider.run(context=_context()))
+
+    assert result.provider_name == "codex-cli"
+    assert result.model_name is None
+    assert seen["argv"][:2] == ["codex", "exec"]
+    assert "read-only" in seen["argv"]
+    assert seen["argv"][-1] == "-"
+
+
+def test_cli_provider_rejects_unknown_evidence_refs():
+    async def runner(argv, stdin_text, timeout):
+        return 0, json.dumps({"structured_output": _payload(refs=("made-up",))}), ""
+
+    provider = ClaudeCliReasoningProvider(runner=runner)
+    with pytest.raises(RuntimeError, match="not present in the bounded context"):
+        asyncio.run(provider.run(context=_context()))
+
+
+def test_cli_provider_rejects_unsupported_remediation_and_cli_failure():
+    async def unsupported(argv, stdin_text, timeout):
+        return 0, json.dumps({"structured_output": _payload(remediation="UNSUPPORTED")}), ""
+
+    async def failing(argv, stdin_text, timeout):
+        return 2, "", "not logged in"
+
+    with pytest.raises(RuntimeError, match="supported remediation"):
+        asyncio.run(ClaudeCliReasoningProvider(runner=unsupported).run(context=_context()))
+    with pytest.raises(RuntimeError, match="not logged in"):
+        asyncio.run(CodexCliReasoningProvider(runner=failing).run(context=_context()))
+
+
+def test_resolver_knows_cli_providers():
+    assert isinstance(resolve_reasoning_provider("claude-cli"), ClaudeCliReasoningProvider)
+    assert isinstance(resolve_reasoning_provider("codex-cli"), CodexCliReasoningProvider)

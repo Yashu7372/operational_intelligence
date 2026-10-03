@@ -9,6 +9,7 @@ from operational_intelligence_lab.lab_001_unknown_incident import run_lab_001
 from operational_intelligence_lab.lab_002_learned_reuse import run_lab_002
 from operational_intelligence_lab.evidence import approve_persisted_lab_001_run
 from operational_intelligence_lab.models import HumanReviewDecision
+from operational_intelligence_lab.reasoning import REASONING_PROVIDER_CHOICES
 
 
 def _review(
@@ -167,13 +168,19 @@ def main() -> None:
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     parser.add_argument(
         "--reasoning-provider",
-        choices=("deterministic", "openai"),
+        choices=REASONING_PROVIDER_CHOICES,
         default="deterministic",
-        help="Use the credential-free reference or a real OpenAI Responses API call.",
+        help=(
+            "Credential-free reference, an OpenAI Responses API call, or a local "
+            "Claude Code / Codex CLI (claude-cli, codex-cli) using its own login."
+        ),
     )
     parser.add_argument(
         "--model",
-        help="OpenAI model ID. Defaults to OPENAI_MODEL or gpt-5.6-luna.",
+        help=(
+            "Model ID for the selected provider. OpenAI defaults to OPENAI_MODEL or "
+            "gpt-5.6-luna; the CLI providers default to the CLI's own configured model."
+        ),
     )
     parser.add_argument(
         "--compare-with-deterministic",
@@ -194,8 +201,8 @@ def main() -> None:
     parser.add_argument("--approval-reason", help="Reason recorded with human approval.")
     args = parser.parse_args()
 
-    if args.model and args.reasoning_provider != "openai":
-        parser.error("--model can only be used with --reasoning-provider openai")
+    if args.model and args.reasoning_provider == "deterministic":
+        parser.error("--model cannot be used with --reasoning-provider deterministic")
 
     if args.approve_run:
         if args.approve_learning:
