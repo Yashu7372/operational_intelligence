@@ -2,3 +2,17 @@ services:
   operational-intelligence-lab:
     build: .
     command: ["operational-intelligence-lab"]
+
+  # Uses the `claude` CLI installed and logged in on the host machine, via the
+  # host bridge. Start the bridge first (see docs/REAL_REASONING_PROVIDER.md):
+  #   CLI_BRIDGE_TOKEN=... oi-cli-bridge --host 0.0.0.0
+  # then: CLI_BRIDGE_TOKEN=... docker compose --profile host-cli up --build lab-claude-cli
+  lab-claude-cli:
+    build: .
+    profiles: ["host-cli"]
+    command: ["operational-intelligence-lab", "--reasoning-provider", "claude-cli"]
+    environment:
+      CLI_BRIDGE_URL: http://host.docker.internal:8765
+      CLI_BRIDGE_TOKEN: ${CLI_BRIDGE_TOKEN:?set CLI_BRIDGE_TOKEN to the bridge token}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

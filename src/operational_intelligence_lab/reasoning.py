@@ -4,6 +4,8 @@ import asyncio
 import json
 import os
 import tempfile
+import urllib.error
+import urllib.request
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -379,8 +381,12 @@ class _CliReasoningProvider:
         runner: CliRunner | None = None,
         executable: str | None = None,
         timeout: float = DEFAULT_CLI_TIMEOUT_SECONDS,
+        bridge_url: str | None = None,
+        bridge_token: str | None = None,
     ) -> None:
         self.model_name = model_name
+        self._bridge_url = bridge_url or os.getenv("CLI_BRIDGE_URL") or None
+        self._bridge_token = bridge_token or os.getenv("CLI_BRIDGE_TOKEN") or None
         self._runner = runner or _subprocess_runner
         self._executable = executable
         self._timeout = timeout
@@ -400,11 +406,53 @@ class _CliReasoningProvider:
         """Return (payload, metadata) where metadata may hold model/response_id/tokens."""
         raise NotImplementedError
 
+    def _invoke_via_bridge(
+        self, prompt: str, schema: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Delegate to the host-side bridge (see cli_bridge.py), e.g. from Docker."""
+        if not self._bridge_token:
+            raise RuntimeError("CLI_BRIDGE_TOKEN is required when CLI_BRIDGE_URL is set")
+        request = urllib.request.Request(
+            self._bridge_url.rstrip("/") + "/v1/reason",
+            data=json.dumps(
+                {
+                    "provider": self.provider_name,
+                    "model": self.model_name,
+                    "prompt": prompt,
+                    "schema": schema,
+                }
+            ).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self._bridge_token}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self._timeout + 30) as response:
+                body = json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode(errors="replace")[:500]
+            raise RuntimeError(f"CLI bridge returned {exc.code}: {detail}") from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise RuntimeError(
+                f"could not reach CLI bridge at {self._bridge_url}: {exc}. "
+                "Is `oi-cli-bridge` running on the host?"
+            ) from exc
+        payload, meta = body.get("payload"), body.get("meta") or {}
+        if not isinstance(payload, dict) or not isinstance(meta, dict):
+            raise RuntimeError("CLI bridge returned a malformed response")
+        return payload, meta
+
     async def run(self, **kwargs: Any) -> ReasoningResult:
         context, evidence, _semantics = _bounded_context(kwargs)
         self.calls += 1
         schema = _reasoning_schema()
-        payload, meta = await self._invoke(self._prompt(context, schema), schema)
+        prompt = self._prompt(context, schema)
+        if self._bridge_url:
+            payload, meta = await asyncio.to_thread(self._invoke_via_bridge, prompt, schema)
+        else:
+            payload, meta = await self._invoke(prompt, schema)
         refs, candidate = _validate_payload(payload, evidence, label=self.label)
         try:
             confidence = float(payload["confidence"])
