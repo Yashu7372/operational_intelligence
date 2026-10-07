@@ -18,7 +18,6 @@ ai = ["openai>=3.0,<4"]
 
 [project.scripts]
 operational-intelligence-lab = "operational_intelligence_lab.run:main"
-oi-cli-bridge = "operational_intelligence_lab.cli_bridge:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

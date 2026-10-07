@@ -27,26 +27,6 @@ Install and sign in to the CLI once (`claude` or `codex`); the adapter shells ou
 
 Same bounded context, same JSON schema, same validation as the OpenAI provider (evidence refs must exist in the journal, the candidate must match the registered remediation contract). Claude runs with tools disabled; Codex runs in a read-only sandbox. Override the executable with `CLAUDE_CLI` / `CODEX_CLI`. `--model` is optional; without it the CLI's configured model is used. `--compare-with-deterministic` works with these too.
 
-## Run in Docker, using the CLI logged in on your laptop
-
-A container cannot use your laptop's `claude`/`codex` binary or login (different OS; on macOS the login is in the Keychain). Instead, run a small bridge on the laptop and point the container at it. The bridge only accepts `claude-cli`/`codex-cli` requests with a bearer token and builds the CLI command itself (Claude with tools disabled, Codex read-only); callers cannot send arbitrary commands.
-
-1. On the laptop (where `claude` works), install the package and start the bridge:
-
-       python -m pip install -e .
-       export CLI_BRIDGE_TOKEN="$(python -c 'import secrets;print(secrets.token_urlsafe(24))')"
-       oi-cli-bridge --host 0.0.0.0 --port 8765
-
-   Docker Desktop (Mac/Windows) also works with the default `--host 127.0.0.1`. On Linux the container reaches the host via the docker bridge, so use `--host 0.0.0.0` (and firewall the port from the network; the token is the only protection).
-
-2. In another terminal, with the same token exported:
-
-       docker compose --profile host-cli up --build lab-claude-cli
-
-   This sets `CLI_BRIDGE_URL=http://host.docker.internal:8765`. The plain `operational-intelligence-lab` service is unchanged and still credential-free.
-
-For `docker run` instead of compose: `-e CLI_BRIDGE_URL=http://host.docker.internal:8765 -e CLI_BRIDGE_TOKEN --add-host host.docker.internal:host-gateway ... --reasoning-provider claude-cli`. The same works for `codex-cli` if Codex is the one installed on the laptop. Quick check from the container side: `curl http://host.docker.internal:8765/healthz`.
-
 ## Run with a real model (OpenAI API)
 
 Low-cost default model:
