@@ -233,3 +233,28 @@ def test_cli_provider_rejects_malformed_payload(mutate):
 
     with pytest.raises(RuntimeError, match="required schema"):
         asyncio.run(ClaudeCliReasoningProvider(runner=runner).run(context=_context()))
+
+
+def test_claude_cli_skips_inline_schema_for_windows_batch_shim(monkeypatch):
+    import operational_intelligence_lab.reasoning as reasoning
+
+    monkeypatch.setattr(reasoning.shutil, "which", lambda name: r"C:\npm\claude.cmd")
+    seen = {}
+
+    async def runner(argv, stdin_text, timeout):
+        seen["argv"] = argv
+        return 0, json.dumps({"structured_output": _payload()}), ""
+
+    asyncio.run(ClaudeCliReasoningProvider(runner=runner).run(context=_context()))
+    assert "--json-schema" not in seen["argv"]
+
+
+def test_missing_cli_error_mentions_override():
+    import operational_intelligence_lab.reasoning as reasoning
+
+    with pytest.raises(RuntimeError, match="CLAUDE_CLI"):
+        asyncio.run(
+            ClaudeCliReasoningProvider(executable="definitely-not-installed-xyz").run(
+                context=_context()
+            )
+        )

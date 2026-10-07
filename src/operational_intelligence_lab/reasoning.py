@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import tempfile
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
@@ -316,9 +317,26 @@ CliRunner = Callable[[list[str], str, float], Awaitable[tuple[int, str, str]]]
 DEFAULT_CLI_TIMEOUT_SECONDS = 300.0
 
 
+def _resolve_executable(name: str) -> str | None:
+    """Resolve like a shell does (honours PATHEXT, so `claude` finds claude.cmd on Windows)."""
+    return shutil.which(name)
+
+
+def _is_batch_shim(name: str) -> bool:
+    resolved = _resolve_executable(name) or name
+    return resolved.lower().endswith((".cmd", ".bat"))
+
+
 async def _subprocess_runner(
     argv: list[str], stdin_text: str, timeout: float
 ) -> tuple[int, str, str]:
+    resolved = _resolve_executable(argv[0])
+    if resolved is None:
+        raise RuntimeError(
+            f"CLI executable {argv[0]!r} was not found on PATH of this Python process; "
+            "install it and sign in, or set CLAUDE_CLI / CODEX_CLI to its full path"
+        )
+    argv = [resolved, *argv[1:]]
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -431,13 +449,12 @@ class ClaudeCliReasoningProvider(_CliReasoningProvider):
     label = "Claude CLI"
 
     async def _invoke(self, prompt, schema):
-        argv = [
-            self._executable or os.getenv("CLAUDE_CLI") or "claude",
-            "-p",
-            "--output-format", "json",
-            "--json-schema", json.dumps(schema),
-            "--tools", "",
-        ]
+        executable = self._executable or os.getenv("CLAUDE_CLI") or "claude"
+        argv = [executable, "-p", "--output-format", "json", "--tools", ""]
+        # JSON on a .cmd/.bat command line is mangled by cmd.exe quoting; the prompt
+        # already carries the schema and the reply is validated strictly either way.
+        if not _is_batch_shim(executable):
+            argv += ["--json-schema", json.dumps(schema)]
         if self.model_name:
             argv += ["--model", self.model_name]
         code, out, err = await self._runner(argv, prompt, self._timeout)
